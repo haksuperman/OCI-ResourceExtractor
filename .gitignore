@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local virtual environments
+venv/
+.venv/
+env/
+
+# Local configuration and credentials
+.env
+.env.*
+.oci/
+*.pem
+*.key
+*.pub
+
+# Generated OCI inventory data and customer reports
+raw_data/
+OCI_Reports/
+
+# Logs and local OS/editor files
+*.log
+.DS_Store
+.idea/
+.vscode/
