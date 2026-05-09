@@ -10,7 +10,7 @@ Group=oci-extractor
 WorkingDirectory=/opt/OCI-ResourceExtractor
 Environment=PATH=/opt/OCI-ResourceExtractor/venv/bin
 Environment=OCI_API_MIN_INTERVAL_MS=0
-ExecStart=/opt/OCI-ResourceExtractor/venv/bin/uvicorn web_app:app --host 127.0.0.1 --port 8000
+ExecStart=/opt/OCI-ResourceExtractor/venv/bin/uvicorn web_app:app --host 127.0.0.1 --port 8088
 Restart=on-failure
 RestartSec=5
 

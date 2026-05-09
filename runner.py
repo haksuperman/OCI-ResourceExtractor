@@ -195,6 +195,7 @@ def run_inventory(profile_name, *, regions=None, compartments=None, service_name
         "started_at": run_start_ts,
         "finished_at": None,
         "duration_ms": None,
+        "total_steps": None,
         "report_path": f"OCI_Reports/OCI_Report_{profile_name}.xlsx",
         "json_paths": {},
         "service_results": [],
@@ -229,6 +230,20 @@ def run_inventory(profile_name, *, regions=None, compartments=None, service_name
     merged_data_by_service = {name: [] for name, _ in services}
     output_path_by_service = {}
     successful_collection_by_service = {name: False for name, _ in services}
+    total_steps = (len(all_regions) * len(regional_services)) + len(global_services)
+    result["total_steps"] = total_steps
+
+    _emit(
+        progress_callback,
+        "INFO",
+        "runner",
+        "run_plan",
+        message="Collection plan prepared",
+        region_count=len(all_regions),
+        regional_service_count=len(regional_services),
+        global_service_count=len(global_services),
+        total_steps=total_steps,
+    )
 
     for region in all_regions:
         _emit(

@@ -113,22 +113,23 @@ python3 main.py
 웹 화면으로 실행하려면 `uvicorn`으로 FastAPI 앱을 실행합니다.
 
 ```bash
-uvicorn web_app:app --host 127.0.0.1 --port 8000
+uvicorn web_app:app --host 127.0.0.1 --port 8088
 ```
 
 브라우저에서 아래 주소로 접속합니다.
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:8088
 ```
 
 웹 화면에서는 다음 작업을 할 수 있습니다.
 
 - OCI profile 선택
-- region/compartment 범위 제한
+- profile 기준 region/compartment 조회 후 범위 선택
 - 수집할 서비스 선택
 - 수집 작업 시작
-- 작업 진행 상태와 이벤트 로그 확인
+- 정확한 step 진행률과 서비스별 수집 결과 확인
+- 이벤트 로그 검색, WARN/ERROR 필터링, 중요 로그 복사
 - 생성된 Excel 리포트 다운로드
 
 ## CLI 실행
@@ -163,6 +164,7 @@ Select number: 2
 
 ```text
 [INFO] service=runner event=run_start message="OCI inventory run started" profile=DEV
+[INFO] service=runner event=run_plan message="Collection plan prepared" total_steps=16
 [INFO] service=runner event=region_start message="Region execution started" step_region=ap-seoul-1
 [INFO] service=runner event=step_start message="Service collection step started" step_service=compute step_region=ap-seoul-1
 [INFO] service=runner event=step_end message="Service collection step finished" step_service=compute collected=12 errors=0 skipped=0
@@ -175,25 +177,34 @@ Select number: 2
 
 ```bash
 source venv/bin/activate
-uvicorn web_app:app --host 127.0.0.1 --port 8000
+uvicorn web_app:app --host 127.0.0.1 --port 8088
 ```
 
-웹 첫 화면에는 `~/.oci/config`에 등록된 profile 목록과 수집 범위 입력란이 표시됩니다.
+웹 첫 화면에는 `~/.oci/config`에 등록된 profile 목록과 수집 범위 선택 영역이 표시됩니다. Profile을 선택하면 웹 앱이 OCI Identity API로 테넌시 이름, 구독 리전, 활성 컴파트먼트를 조회해 체크박스로 보여줍니다. 전체가 선택된 상태는 별도 필터 없이 전체 범위를 수집한다는 의미입니다.
 
 ```text
 OCI Profile: DEV
-Region 제한: ap-seoul-1
-Compartment 제한: network-dev,app-dev
+Region 제한: ap-seoul-1 선택
+Compartment 제한: network-dev 선택
 서비스 선택: compute, vcn, block_storage, ...
 ```
 
-수집을 시작하면 작업 상세 화면에서 현재 상태를 확인할 수 있습니다.
+조회가 실패하거나 목록에서 바로 고르기 어려운 경우에는 region/compartment를 직접 입력할 수 있습니다. 직접 입력은 기존과 같이 콤마 구분 형식을 사용합니다.
+
+```text
+ap-seoul-1,ap-tokyo-1
+network-dev,app-dev
+```
+
+수집을 시작하면 작업 상세 화면에서 현재 상태와 정확한 진행률을 확인할 수 있습니다. 진행률은 실행 계획의 전체 step 수 대비 완료 step 수로 계산됩니다.
 
 ```text
 Status: running
 Current Step: compute / ap-seoul-1
-Completed Steps: 4
+Completed Steps: 4 / 16
 ```
+
+작업 상세 화면에는 서비스별 수집 결과와 이벤트 로그가 함께 표시됩니다. 이벤트 로그는 전체/WARN/ERROR 필터, 키워드 검색, WARN/ERROR 복사 기능을 제공합니다.
 
 작업이 완료되면 `Excel 다운로드` 버튼으로 아래 파일을 받을 수 있습니다.
 
@@ -226,7 +237,7 @@ sudo systemctl status oci-resource-extractor-web
 journalctl -u oci-resource-extractor-web -f
 ```
 
-기본 예시는 보안을 위해 `127.0.0.1:8000`에만 바인딩합니다. 외부 브라우저에서 접근해야 한다면 Nginx/Apache 같은 reverse proxy를 앞단에 두고 인증과 접근 제한을 적용하는 구성을 권장합니다.
+기본 예시는 보안을 위해 `127.0.0.1:8088`에만 바인딩합니다. 외부 브라우저에서 접근해야 한다면 Nginx/Apache 같은 reverse proxy를 앞단에 두고 인증과 접근 제한을 적용하는 구성을 권장합니다.
 
 systemd로 실행할 때 OCI SDK는 서비스 계정의 홈 디렉토리 기준 `~/.oci/config`를 읽습니다. 예시처럼 `User=oci-extractor`를 사용한다면 `/home/oci-extractor/.oci/config`와 key file 권한을 먼저 준비해야 합니다.
 
