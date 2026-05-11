@@ -2,7 +2,7 @@
 
 OCI Resource Extractor는 OCI 테넌시에 프로비저닝된 리소스를 서비스별로 수집하고, 운영/보안/아키텍처 검토에 바로 사용할 수 있는 Excel 리포트를 생성하는 CLI 기반 Python 도구입니다.
 
-이 도구는 단순히 `list_instances` 같은 단일 API 결과만 엑셀로 옮기는 것이 아니라, OCI Console의 리소스 상세 화면에서 운영자가 함께 보는 연결 정보까지 최대한 따라가며 수집하는 것을 목표로 합니다. 예를 들어 Compute는 인스턴스 기본 정보뿐 아니라 VNIC, Public/Private IP, Subnet, VCN, Boot Volume, Block Volume, Attachment Type 같은 연관 정보를 함께 raw 데이터와 Excel에 반영합니다.
+이 도구는 단순히 `list_instances` 같은 단일 API 결과만 엑셀로 옮기는 것이 아니라, OCI Console의 리소스 상세 화면에서 운영자가 함께 보는 연결 정보까지 최대한 따라가며 수집하는 것을 목표로 합니다. 예를 들어 Compute는 인스턴스 기본 정보뿐 아니라 VNIC, Public/Private IP, Subnet, VCN, Boot Volume, Block Volume, Attachment Type 같은 연관 정보를 함께 raw 데이터와 Excel에 반영합니다. Instance Pool은 별도 탭에서 Pool 단위로 Autoscaling Configuration, Instance Configuration, 연결된 Load Balancer/Network Load Balancer 정보를 함께 확인할 수 있습니다.
 
 ## 한눈에 보기
 
@@ -31,7 +31,7 @@ OCI_Reports/OCI_Report_<profile>.xlsx
 
 | 영역 | 서비스 |
 | --- | --- |
-| Compute | Compute Instance |
+| Compute | Compute Instance, Instance Pools / Autoscaling |
 | Networking | VCN, VPN, FastConnect, DNS, Load Balancer, Network Load Balancer |
 | Storage | Block Storage, File Storage, Object Storage |
 | Oracle AI Database | Oracle Base Database Service(DBCS), Autonomous Database(ADB) |
@@ -186,7 +186,7 @@ uvicorn web_app:app --host 127.0.0.1 --port 8088
 OCI Profile: DEV
 Region 제한: ap-seoul-1 선택
 Compartment 제한: network-dev 선택
-서비스 선택: compute, vcn, block_storage, ...
+서비스 선택: compute, instance_pools, vcn, block_storage, ...
 ```
 
 조회가 실패하거나 목록에서 바로 고르기 어려운 경우에는 region/compartment를 직접 입력할 수 있습니다. 직접 입력은 기존과 같이 콤마 구분 형식을 사용합니다.
@@ -269,6 +269,7 @@ python3 main.py
 raw_data/
 └── DEV/
     ├── compute_DEV.json
+    ├── instance_pools_DEV.json
     ├── vcn_DEV.json
     ├── block_storage_DEV.json
     ├── load_balancer_DEV.json
@@ -314,6 +315,17 @@ Compute raw 예시:
 ]
 ```
 
+Instance Pool raw는 Pool을 기준 리소스로 두고, 운영자가 Pool 상세 화면에서 함께 보는 연관 정보를 컨테이너로 분리해 보존합니다.
+
+```text
+instance_pool_raw
+instance_configuration_enriched
+pool_instances_enriched
+autoscaling_enriched
+load_balancer_enriched
+_errors
+```
+
 ### Excel 리포트
 
 Excel 파일은 `Summary` 시트를 맨 앞에 만들고, 서비스별 시트를 OCI Console 대분류 기준으로 정렬합니다.
@@ -323,6 +335,12 @@ Excel 파일은 `Summary` 시트를 맨 앞에 만들고, 서비스별 시트를
 ```text
 Summary
 1-Instance
+1-Instance_Pools
+1-Instance_Pool_Instances
+1-Instance_Configurations
+1-Autoscaling_Configurations
+1-Autoscaling_Policies
+1-Instance_Pool_LB_Attachments
 2-VCNs
 2-VCN_Subnets
 2-VCN_Route_Tables
@@ -365,11 +383,12 @@ Summary
 운영자가 리포트를 열었을 때의 기본 흐름은 다음과 같습니다.
 
 1. `Summary`에서 전체 시트와 리소스 개수를 확인합니다.
-2. `1-Instance`에서 Compute 인스턴스 상태, shape, 네트워크, 스토리지 연결 정보를 봅니다.
-3. `2-VCNs`, `2-VCN_Subnets`, `2-VCN_Security_Rules`에서 네트워크 구성과 보안 규칙을 확인합니다.
-4. `3-Block_Volumes`, `3-File_Systems`, `3-Object_Storage_Buckets`에서 스토리지 구성을 확인합니다.
-5. `4-DBCS_Systems`, `4-ADB_Databases`, `5-MySQL_DB_Systems`에서 DB 계층을 확인합니다.
-6. `_errors` 컬럼이 있는 경우 부분 수집 실패 원인을 확인합니다.
+2. `1-Instance`에서 Compute 인스턴스 상태, shape, 네트워크, 스토리지 연결 정보와 Instance Pool 소속 여부를 봅니다.
+3. `1-Instance_Pools` 계열 시트에서 Pool 단위 구성원, Autoscaling Configuration/Policy, Instance Configuration, LB/NLB 연결을 확인합니다.
+4. `2-VCNs`, `2-VCN_Subnets`, `2-VCN_Security_Rules`에서 네트워크 구성과 보안 규칙을 확인합니다.
+5. `3-Block_Volumes`, `3-File_Systems`, `3-Object_Storage_Buckets`에서 스토리지 구성을 확인합니다.
+6. `4-DBCS_Systems`, `4-ADB_Databases`, `5-MySQL_DB_Systems`에서 DB 계층을 확인합니다.
+7. `_errors` 컬럼이 있는 경우 부분 수집 실패 원인을 확인합니다.
 
 ## 검증
 

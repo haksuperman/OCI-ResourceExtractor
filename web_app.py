@@ -23,6 +23,7 @@ MAX_EVENTS_PER_JOB = 500
 
 SERVICE_LABELS = {
     "compute": "Compute Instance",
+    "instance_pools": "Instance Pools / Autoscaling",
     "vcn": "VCN",
     "vpn": "VPN",
     "fastconnect": "FastConnect",
@@ -40,7 +41,7 @@ SERVICE_LABELS = {
 }
 
 SERVICE_GROUPS = [
-    ("Compute", ["compute"]),
+    ("Compute", ["compute", "instance_pools"]),
     (
         "Networking",
         [
