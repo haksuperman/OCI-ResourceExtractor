@@ -201,6 +201,7 @@ def _collect_instance_pools(compute_management_client, comp_id, region, comp_nam
         try:
             pool_instances = common.list_call_get_all_results(
                 compute_management_client.list_instance_pool_instances,
+                compartment_id=comp_id,
                 instance_pool_id=pool_id,
             ).data
             for pool_instance in pool_instances:

@@ -12,6 +12,12 @@ from log_utils import log_event
 SHEET_TO_GROUP_MAP = {
     # Compute
     "Compute": "Compute",
+    "Instance_Pools": "Compute",
+    "Instance_Pool_Instances": "Compute",
+    "Instance_Configurations": "Compute",
+    "Autoscaling_Configurations": "Compute",
+    "Autoscaling_Policies": "Compute",
+    "Instance_Pool_LB_Attachments": "Compute",
     # Networking
     "Vcn": "Networking",
     "Vcn_Subnets": "Networking",
@@ -148,6 +154,12 @@ RAW_COL_NAME_RE = re.compile(r"^[a-z0-9_.]+$")
 SHEET_PREFIX_RE = re.compile(r"^(\d+)-")
 SHEET_NAME_CANONICAL_MAP = {
     "Compute": "Instance",
+    "Instance_Pools": "Instance_Pools",
+    "Instance_Pool_Instances": "Instance_Pool_Instances",
+    "Instance_Configurations": "Instance_Configurations",
+    "Autoscaling_Configurations": "Autoscaling_Configurations",
+    "Autoscaling_Policies": "Autoscaling_Policies",
+    "Instance_Pool_LB_Attachments": "Instance_Pool_LB_Attachments",
     "Vcn": "VCNs",
     "Vcn_Subnets": "VCN_Subnets",
     "Vcn_Route_Tables": "VCN_Route_Tables",
@@ -397,15 +409,14 @@ def create_report(profile_name, json_paths, tenancy_name=None, extracted_at=None
         with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        if not data: 
+        if not data:
             log_event(
                 "INFO",
                 "report",
                 "service_data_empty",
-                message="No data found for service. Skipping sheet generation",
+                message="No data found for service. Generating empty master sheet",
                 step_service=service_name,
             )
-            continue
 
         df = pd.json_normalize(data)
         
