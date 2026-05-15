@@ -41,13 +41,26 @@ def collect(client):
             )
                 
         except oci.exceptions.ServiceError as e:
-            if e.status != 404:
-                error_count += 1
+            error_count += 1
+            if e.status == 404:
+                _log(
+                    "WARN",
+                    comp_name,
+                    "zone_listing_not_authorized_or_not_found",
+                    detail=common.service_error_detail(e),
+                    status=e.status,
+                    code=getattr(e, "code", None),
+                    message=getattr(e, "message", str(e)),
+                )
+            else:
                 _log(
                     "WARN",
                     comp_name,
                     "zone_listing_failed",
-                    detail=f"code={e.status} message={e.message}",
+                    detail=common.service_error_detail(e),
+                    status=e.status,
+                    code=getattr(e, "code", None),
+                    message=getattr(e, "message", str(e)),
                 )
             continue
         except Exception as e:

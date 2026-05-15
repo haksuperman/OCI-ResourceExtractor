@@ -150,7 +150,6 @@ def _get_group_info(sheet_name):
     return group_name, group_no
 
 
-RAW_COL_NAME_RE = re.compile(r"^[a-z0-9_.]+$")
 SHEET_PREFIX_RE = re.compile(r"^(\d+)-")
 SHEET_NAME_CANONICAL_MAP = {
     "Compute": "Instance",
@@ -236,10 +235,6 @@ SHEET_NAME_CANONICAL_MAP = {
 }
 
 
-def _is_raw_col_name(col_name):
-    return isinstance(col_name, str) and bool(RAW_COL_NAME_RE.match(col_name))
-
-
 def _sheet_tab_sort_key(title):
     if title == "Summary":
         return (0, 0, title)
@@ -276,40 +271,10 @@ def _align_preferred_with_raw(sheet_df, preferred_columns):
     if not preferred_columns:
         return sheet_df, []
 
-    raw_cols = [c for c in sheet_df.columns if _is_raw_col_name(c)]
     resolved_pref = []
-    drop_alias_cols = set()
-
     for pref_col in preferred_columns:
-        if pref_col not in sheet_df.columns:
-            continue
-
-        if _is_raw_col_name(pref_col):
-            if pref_col not in resolved_pref:
-                resolved_pref.append(pref_col)
-            continue
-
-        alias_series = sheet_df[pref_col]
-        matched_raw = None
-        for raw_col in raw_cols:
-            if raw_col == pref_col:
-                continue
-            try:
-                if sheet_df[raw_col].equals(alias_series):
-                    matched_raw = raw_col
-                    break
-            except Exception:
-                continue
-
-        if matched_raw:
-            if matched_raw not in resolved_pref:
-                resolved_pref.append(matched_raw)
-            drop_alias_cols.add(pref_col)
-        elif pref_col not in resolved_pref:
+        if pref_col in sheet_df.columns and pref_col not in resolved_pref:
             resolved_pref.append(pref_col)
-
-    if drop_alias_cols:
-        sheet_df = sheet_df.drop(columns=[c for c in drop_alias_cols if c in sheet_df.columns])
 
     return sheet_df, resolved_pref
 

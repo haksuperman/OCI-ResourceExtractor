@@ -67,6 +67,13 @@ def list_call_get_all_results(list_func, *args, **kwargs):
     return oci.pagination.list_call_get_all_results(list_func, *args, **retry_kwargs)
 
 
+def service_error_detail(error):
+    status = getattr(error, "status", "-")
+    code = getattr(error, "code", "-")
+    message = getattr(error, "message", str(error))
+    return f"status={status} code={code} message={message}"
+
+
 def create_client(client_cls, *args, **kwargs):
     retry_kwargs = dict(kwargs)
     retry_kwargs.setdefault("retry_strategy", DEFAULT_RETRY_STRATEGY)
@@ -93,13 +100,20 @@ class OCIClient:
         self.tenancy_name = self._get_tenancy_name()
 
         print(f"[!] Target Tenancy: {self.tenancy_name} ({self.tenancy_id})")
-        self.regions = [r.region_name for r in self.identity_client.list_region_subscriptions(self.tenancy_id).data]
+        region_subscriptions = list_call_get_all_results(
+            self.identity_client.list_region_subscriptions,
+            self.tenancy_id,
+        ).data
+        self.regions = [r.region_name for r in region_subscriptions]
         self.compartments = self.get_all_compartments()
         self._apply_temp_scope_filter()
 
     def _get_tenancy_name(self):
         try:
-            tenancy = self.identity_client.get_tenancy(self.tenancy_id).data
+            tenancy = call_with_retry(
+                self.identity_client.get_tenancy,
+                self.tenancy_id,
+            ).data
             if tenancy and getattr(tenancy, "name", None):
                 return tenancy.name
         except Exception as e:
@@ -113,7 +127,10 @@ class OCIClient:
             )
 
         try:
-            tenancy_compartment = self.identity_client.get_compartment(self.tenancy_id).data
+            tenancy_compartment = call_with_retry(
+                self.identity_client.get_compartment,
+                self.tenancy_id,
+            ).data
             if tenancy_compartment and getattr(tenancy_compartment, "name", None):
                 return tenancy_compartment.name
         except Exception as e:
@@ -136,7 +153,10 @@ class OCIClient:
             compartment_id_in_subtree=True,
             access_level="ANY"
         ).data
-        root = self.identity_client.get_compartment(self.tenancy_id).data
+        root = call_with_retry(
+            self.identity_client.get_compartment,
+            self.tenancy_id,
+        ).data
         compartments.append(root)
         return [c for c in compartments if c.lifecycle_state == "ACTIVE"]
 

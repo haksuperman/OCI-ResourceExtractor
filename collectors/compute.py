@@ -465,7 +465,10 @@ def collect(client):
                 if ins.image_id:
                     if ins.image_id not in image_cache:
                         try:
-                            img = compute_client.get_image(ins.image_id).data
+                            img = common.call_with_retry(
+                                compute_client.get_image,
+                                ins.image_id,
+                            ).data
                             image_cache[ins.image_id] = oci.util.to_dict(img)
                         except Exception as e:
                             error_count += 1
@@ -497,7 +500,10 @@ def collect(client):
                         bv_id = attachment.boot_volume_id
                         if bv_id not in boot_volume_cache:
                             try:
-                                bv_data = block_storage_client.get_boot_volume(bv_id).data
+                                bv_data = common.call_with_retry(
+                                    block_storage_client.get_boot_volume,
+                                    bv_id,
+                                ).data
                                 boot_volume_cache[bv_id] = oci.util.to_dict(bv_data)
                             except Exception as e:
                                 error_count += 1
@@ -547,7 +553,10 @@ def collect(client):
                         vol_id = attachment.volume_id
                         if vol_id not in block_volume_cache:
                             try:
-                                vol_data = block_storage_client.get_volume(vol_id).data
+                                vol_data = common.call_with_retry(
+                                    block_storage_client.get_volume,
+                                    vol_id,
+                                ).data
                                 block_volume_cache[vol_id] = oci.util.to_dict(vol_data)
                             except Exception as e:
                                 error_count += 1
@@ -598,7 +607,32 @@ def collect(client):
                     ]
 
                     for attachment in vnic_attachments:
-                        vnic = network_client.get_vnic(attachment.vnic_id).data
+                        vnic_id = getattr(attachment, "vnic_id", None)
+                        try:
+                            vnic = common.call_with_retry(
+                                network_client.get_vnic,
+                                vnic_id,
+                            ).data
+                        except Exception as e:
+                            error_count += 1
+                            resource["_errors"].append(f"vnic fetch failed ({vnic_id}): {e}")
+                            _log(
+                                "WARN",
+                                region,
+                                comp_name,
+                                "vnic_fetch_failed",
+                                resource_id=ins.id,
+                                detail=str(e),
+                            )
+                            networking_enriched["vnics"].append(
+                                {
+                                    "id": vnic_id,
+                                    "attachment_details": oci.util.to_dict(attachment),
+                                    "nsg_details": [],
+                                }
+                            )
+                            continue
+
                         vnic_dict = oci.util.to_dict(vnic)
                         vnic_dict["attachment_details"] = oci.util.to_dict(attachment)
                         vnic_dict["nsg_details"] = []
@@ -607,7 +641,10 @@ def collect(client):
                             if vnic.subnet_id not in subnet_cache:
                                 try:
                                     subnet_cache[vnic.subnet_id] = oci.util.to_dict(
-                                        network_client.get_subnet(vnic.subnet_id).data
+                                        common.call_with_retry(
+                                            network_client.get_subnet,
+                                            vnic.subnet_id,
+                                        ).data
                                     )
                                 except Exception as e:
                                     error_count += 1
@@ -633,7 +670,10 @@ def collect(client):
                                 if vcn_id not in vcn_cache:
                                     try:
                                         vcn_cache[vcn_id] = oci.util.to_dict(
-                                            network_client.get_vcn(vcn_id).data
+                                            common.call_with_retry(
+                                                network_client.get_vcn,
+                                                vcn_id,
+                                            ).data
                                         )
                                     except Exception as e:
                                         error_count += 1
@@ -656,7 +696,10 @@ def collect(client):
                             if nsg_id not in nsg_cache:
                                 try:
                                     nsg_cache[nsg_id] = oci.util.to_dict(
-                                        network_client.get_network_security_group(nsg_id).data
+                                        common.call_with_retry(
+                                            network_client.get_network_security_group,
+                                            nsg_id,
+                                        ).data
                                     )
                                 except Exception as e:
                                     error_count += 1
