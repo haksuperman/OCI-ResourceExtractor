@@ -295,6 +295,21 @@ COMMON_CONTEXT_COLUMN_CANDIDATES = [
     (["fault_domain"], ["fault_domain", "Fault Domain"]),
 ]
 
+DIAGNOSTIC_FRONT_COLUMNS = [
+    "category",
+    "health",
+    "service",
+    "region",
+    "compartment",
+    "resource",
+    "kind",
+    "status",
+    "code",
+    "message",
+    "detail",
+]
+DIAGNOSTIC_TRAILING_COLUMNS = ["timestamp", "level", "event"]
+
 
 def _pick_service_raw_column(existing, raw_field_names, ordered):
     for suffix in ("_raw", "_enriched"):
@@ -331,7 +346,34 @@ def _reorder_common_context_columns(sheet_df):
     return sheet_df[ordered + remaining]
 
 
-def create_report(profile_name, json_paths, tenancy_name=None, extracted_at=None):
+def _diagnostics_dataframe(diagnostics):
+    rows = diagnostics or []
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    for col in DIAGNOSTIC_FRONT_COLUMNS + DIAGNOSTIC_TRAILING_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    ordered = DIAGNOSTIC_FRONT_COLUMNS + DIAGNOSTIC_TRAILING_COLUMNS
+    remaining = [col for col in df.columns if col not in ordered]
+    return df[ordered + remaining]
+
+
+def _run_summary_value(run_summary, key, default=0):
+    if not run_summary:
+        return default
+    return run_summary.get(key, default)
+
+
+def create_report(
+    profile_name,
+    json_paths,
+    tenancy_name=None,
+    extracted_at=None,
+    diagnostics=None,
+    run_summary=None,
+):
     report_dir = "OCI_Reports"
     if not os.path.exists(report_dir):
         os.makedirs(report_dir)
@@ -358,6 +400,7 @@ def create_report(profile_name, json_paths, tenancy_name=None, extracted_at=None
     used_sheet_names = set()
     tenancy_value = tenancy_name or profile_name
     extracted_at_value = extracted_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    diagnostics_df = _diagnostics_dataframe(diagnostics)
     
     for service_name, path in json_paths.items():
         if not os.path.exists(path):
@@ -536,6 +579,43 @@ def create_report(profile_name, json_paths, tenancy_name=None, extracted_at=None
             
             sheet_count += 1
 
+    diagnostics_sheet_count = 0
+    if not diagnostics_df.empty:
+        diagnostics_sheet_name = "99-Run_Diagnostics"
+        diagnostics_df.to_excel(writer, sheet_name=diagnostics_sheet_name, index=False)
+        used_sheet_names.add(diagnostics_sheet_name)
+        diagnostics_sheet_count = 1
+
+        ws_diag = writer.sheets[diagnostics_sheet_name]
+        ws_diag.freeze_panes = "A2"
+        if ws_diag.max_column > 0 and ws_diag.max_row >= 1:
+            ws_diag.auto_filter.ref = (
+                f"A1:{get_column_letter(ws_diag.max_column)}{ws_diag.max_row}"
+            )
+
+        column_widths = {}
+        for row_idx, row in enumerate(
+            ws_diag.iter_rows(
+                min_row=1,
+                max_row=ws_diag.max_row,
+                min_col=1,
+                max_col=ws_diag.max_column,
+            ),
+            1,
+        ):
+            for col_idx, cell in enumerate(row, 1):
+                cell.border = thin_border
+                if row_idx == 1:
+                    cell.fill = header_core_fill
+                    cell.font = header_font
+                if cell.value:
+                    length = len(str(cell.value))
+                    if col_idx not in column_widths or length > column_widths[col_idx]:
+                        column_widths[col_idx] = length
+
+        for col_idx, width in column_widths.items():
+            ws_diag.column_dimensions[get_column_letter(col_idx)].width = min(width + 4, 60)
+
     # 6. 요약(목차) 시트 생성: 데이터가 없어도 Summary는 항상 생성한다.
     wb = writer.book
     if "Summary" in wb.sheetnames:
@@ -567,6 +647,26 @@ def create_report(profile_name, json_paths, tenancy_name=None, extracted_at=None
 
     for cell_ref in ["E2", "E3"]:
         value_cell = ws_dash[cell_ref]
+        value_cell.border = thin_border
+        value_cell.alignment = left_align
+
+    summary_metrics = [
+        ("실행 상태", _run_summary_value(run_summary, "health", "ok")),
+        ("Warnings", _run_summary_value(run_summary, "warning_count")),
+        (
+            "Permission Denied",
+            _run_summary_value(run_summary, "permission_denied_count"),
+        ),
+        ("Errors", _run_summary_value(run_summary, "error_count")),
+    ]
+    for row_idx, (label, value) in enumerate(summary_metrics, 2):
+        label_cell = ws_dash.cell(row=row_idx, column=7, value=label)
+        label_cell.border = thin_border
+        label_cell.fill = header_core_fill
+        label_cell.font = meta_label_font
+        label_cell.alignment = center_align
+
+        value_cell = ws_dash.cell(row=row_idx, column=8, value=value)
         value_cell.border = thin_border
         value_cell.alignment = left_align
 
@@ -621,6 +721,8 @@ def create_report(profile_name, json_paths, tenancy_name=None, extracted_at=None
     ws_dash.column_dimensions["C"].width = 34
     ws_dash.column_dimensions["D"].width = 12
     ws_dash.column_dimensions["E"].width = 30
+    ws_dash.column_dimensions["G"].width = 22
+    ws_dash.column_dimensions["H"].width = 18
 
     # Keep Summary as the left-most tab and sort service tabs by numeric prefix (ascending).
     desired_order = [ws.title for ws in sorted(wb.worksheets, key=lambda ws: _sheet_tab_sort_key(ws.title))]
@@ -639,6 +741,7 @@ def create_report(profile_name, json_paths, tenancy_name=None, extracted_at=None
         "report_generated",
         message="Excel report generated",
         report=output_file,
-        sheet_count=sheet_count + 1,
+        sheet_count=sheet_count + diagnostics_sheet_count + 1,
         resource_sheets=sheet_count,
+        diagnostic_sheets=diagnostics_sheet_count,
     )

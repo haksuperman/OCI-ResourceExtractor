@@ -23,7 +23,7 @@ from collectors import (
     waf_edge,
 )
 from formatters import formatter_base
-from log_utils import log_event
+from log_utils import classify_error, log_event, log_event_sink
 
 
 SERVICE_REGISTRY = [
@@ -56,15 +56,108 @@ def _notify(callback, payload):
 
 
 def _emit(callback, level, service, event, **fields):
-    log_event(level, service, event, **fields)
-    payload = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "level": level.upper(),
-        "service": service,
-        "event": event,
+    return log_event(level, service, event, **fields)
+
+
+def _event_level(event):
+    return str(event.get("level", "")).upper()
+
+
+def _event_service(event):
+    return event.get("step_service") or event.get("service") or "-"
+
+
+def _event_region(event):
+    return event.get("step_region") or event.get("region") or "-"
+
+
+def _is_diagnostic_event(event):
+    return _event_level(event) in {"WARN", "WARNING", "ERROR"}
+
+
+def _summarize_events(events):
+    summary = {
+        "warning_count": 0,
+        "error_count": 0,
+        "permission_denied_count": 0,
     }
-    payload.update(fields)
-    _notify(callback, payload)
+    for event in events:
+        level = _event_level(event)
+        if level in {"WARN", "WARNING"}:
+            summary["warning_count"] += 1
+        elif level == "ERROR":
+            summary["error_count"] += 1
+        if event.get("kind") == "permission_denied":
+            summary["permission_denied_count"] += 1
+    return summary
+
+
+def _step_health(collected, skipped, counts):
+    if counts["error_count"] > 0 and not collected:
+        return "failed"
+    if counts["permission_denied_count"] > 0:
+        if counts["error_count"] == 0:
+            return "permission_limited"
+        return "partial"
+    if counts["error_count"] > 0 or counts["warning_count"] > 0:
+        return "partial"
+    if (skipped and str(skipped).startswith("1(no_data)")) or collected == 0:
+        return "no_data"
+    return "ok"
+
+
+def _overall_health(service_results):
+    if not service_results:
+        return "no_data"
+    health_values = [item.get("health", "no_data") for item in service_results]
+    if any(value == "failed" for value in health_values):
+        return "failed"
+    if any(value == "partial" for value in health_values):
+        return "partial"
+    if any(value == "permission_limited" for value in health_values):
+        return "permission_limited"
+    if all(value == "no_data" for value in health_values):
+        return "no_data"
+    return "ok"
+
+
+def _diagnostics_from_events(events, service_results):
+    health_by_step = {
+        (item.get("service"), item.get("region")): item.get("health", "")
+        for item in service_results
+    }
+    health_by_service = {}
+    for item in service_results:
+        health_by_service.setdefault(item.get("service"), item.get("health", ""))
+
+    diagnostics = []
+    for event in events:
+        if not _is_diagnostic_event(event):
+            continue
+        service = _event_service(event)
+        region = _event_region(event)
+        diagnostics.append(
+            {
+                "timestamp": event.get("timestamp", ""),
+                "level": _event_level(event),
+                "event": event.get("event", ""),
+                "category": "Run_Diagnostics",
+                "health": health_by_step.get(
+                    (service, region),
+                    health_by_service.get(service, ""),
+                ),
+                "service": service,
+                "region": region,
+                "compartment": event.get("compartment", "-"),
+                "resource": event.get("resource", "-"),
+                "kind": event.get("kind", ""),
+                "status": event.get("status", ""),
+                "code": event.get("code", ""),
+                "message": event.get("message", ""),
+                "detail": event.get("detail", ""),
+            }
+        )
+    return diagnostics
 
 
 def _read_collected_data(path, progress_callback=None):
@@ -183,192 +276,218 @@ def run_inventory(profile_name, *, regions=None, compartments=None, service_name
     if not services_for_run:
         raise ValueError("No matching services selected")
 
-    client = common.OCIClient(profile_name)
-    _apply_runtime_scope_filter(client, regions, compartments, progress_callback)
+    run_events = []
 
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_start_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    run_start = time.time()
-    result = {
-        "run_id": run_id,
-        "profile": profile_name,
-        "tenancy_name": client.tenancy_name,
-        "tenancy_id": client.tenancy_id,
-        "started_at": run_start_ts,
-        "finished_at": None,
-        "duration_ms": None,
-        "total_steps": None,
-        "report_path": f"OCI_Reports/OCI_Report_{profile_name}.xlsx",
-        "json_paths": {},
-        "service_results": [],
-    }
+    def sink(payload):
+        run_events.append(dict(payload))
+        _notify(progress_callback, payload)
 
-    _emit(
-        progress_callback,
-        "INFO",
-        "runner",
-        "run_start",
-        message="OCI inventory run started",
-        run_id=run_id,
-        profile=profile_name,
-        tenancy=client.tenancy_id,
-        started_at=run_start_ts,
-    )
+    with log_event_sink(sink):
+        client = common.OCIClient(profile_name)
+        _apply_runtime_scope_filter(client, regions, compartments, progress_callback)
 
-    json_paths = {}
-    regional_services = [
-        (svc["name"], svc["collector"])
-        for svc in services_for_run
-        if svc["scope"] == "regional"
-    ]
-    global_services = [
-        (svc["name"], svc["collector"])
-        for svc in services_for_run
-        if svc["scope"] == "global"
-    ]
-    services = [(svc["name"], svc["collector"]) for svc in services_for_run]
+        run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        run_start_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        run_start = time.time()
+        result = {
+            "run_id": run_id,
+            "profile": profile_name,
+            "tenancy_name": client.tenancy_name,
+            "tenancy_id": client.tenancy_id,
+            "started_at": run_start_ts,
+            "finished_at": None,
+            "duration_ms": None,
+            "total_steps": None,
+            "report_path": f"OCI_Reports/OCI_Report_{profile_name}.xlsx",
+            "json_paths": {},
+            "service_results": [],
+            "diagnostics": [],
+            "run_summary": {},
+        }
 
-    all_regions = list(client.regions)
-    merged_data_by_service = {name: [] for name, _ in services}
-    output_path_by_service = {}
-    successful_collection_by_service = {name: False for name, _ in services}
-    total_steps = (len(all_regions) * len(regional_services)) + len(global_services)
-    result["total_steps"] = total_steps
-
-    _emit(
-        progress_callback,
-        "INFO",
-        "runner",
-        "run_plan",
-        message="Collection plan prepared",
-        region_count=len(all_regions),
-        regional_service_count=len(regional_services),
-        global_service_count=len(global_services),
-        total_steps=total_steps,
-    )
-
-    for region in all_regions:
         _emit(
             progress_callback,
             "INFO",
             "runner",
-            "region_start",
-            message="Region execution started",
-            step_region=region,
+            "run_start",
+            message="OCI inventory run started",
+            run_id=run_id,
+            profile=profile_name,
+            tenancy=client.tenancy_id,
+            started_at=run_start_ts,
         )
-        client.regions = [region]
 
-        for service_name, service_func in regional_services:
+        json_paths = {}
+        regional_services = [
+            (svc["name"], svc["collector"])
+            for svc in services_for_run
+            if svc["scope"] == "regional"
+        ]
+        global_services = [
+            (svc["name"], svc["collector"])
+            for svc in services_for_run
+            if svc["scope"] == "global"
+        ]
+        services = [(svc["name"], svc["collector"]) for svc in services_for_run]
+
+        all_regions = list(client.regions)
+        merged_data_by_service = {name: [] for name, _ in services}
+        output_path_by_service = {}
+        successful_collection_by_service = {name: False for name, _ in services}
+        total_steps = (len(all_regions) * len(regional_services)) + len(global_services)
+        result["total_steps"] = total_steps
+
+        _emit(
+            progress_callback,
+            "INFO",
+            "runner",
+            "run_plan",
+            message="Collection plan prepared",
+            region_count=len(all_regions),
+            regional_service_count=len(regional_services),
+            global_service_count=len(global_services),
+            total_steps=total_steps,
+        )
+
+        for region in all_regions:
+            _emit(
+                progress_callback,
+                "INFO",
+                "runner",
+                "region_start",
+                message="Region execution started",
+                step_region=region,
+            )
+            client.regions = [region]
+
+            for service_name, service_func in regional_services:
+                step_result = _run_service_step(
+                    client,
+                    service_name,
+                    service_func,
+                    region,
+                    merged_data_by_service,
+                    output_path_by_service,
+                    successful_collection_by_service,
+                    progress_callback,
+                    run_events,
+                )
+                result["service_results"].append(step_result)
+
+            _emit(
+                progress_callback,
+                "INFO",
+                "runner",
+                "region_end",
+                message="Region execution finished",
+                step_region=region,
+            )
+
+        if global_services:
+            _emit(
+                progress_callback,
+                "INFO",
+                "runner",
+                "global_services_start",
+                message="Global service collection started",
+            )
+
+        for service_name, service_func in global_services:
+            client.regions = all_regions
             step_result = _run_service_step(
                 client,
                 service_name,
                 service_func,
-                region,
+                "global",
                 merged_data_by_service,
                 output_path_by_service,
                 successful_collection_by_service,
                 progress_callback,
+                run_events,
+                global_service=True,
             )
             result["service_results"].append(step_result)
 
-        _emit(
-            progress_callback,
-            "INFO",
-            "runner",
-            "region_end",
-            message="Region execution finished",
-            step_region=region,
-        )
-
-    if global_services:
-        _emit(
-            progress_callback,
-            "INFO",
-            "runner",
-            "global_services_start",
-            message="Global service collection started",
-        )
-
-    for service_name, service_func in global_services:
-        client.regions = all_regions
-        step_result = _run_service_step(
-            client,
-            service_name,
-            service_func,
-            "global",
-            merged_data_by_service,
-            output_path_by_service,
-            successful_collection_by_service,
-            progress_callback,
-            global_service=True,
-        )
-        result["service_results"].append(step_result)
-
-    if global_services:
-        _emit(
-            progress_callback,
-            "INFO",
-            "runner",
-            "global_services_end",
-            message="Global service collection finished",
-        )
-
-    client.regions = all_regions
-
-    for service_name, _ in services:
-        merged_rows = merged_data_by_service.get(service_name, [])
-        output_path = output_path_by_service.get(
-            service_name,
-            _default_raw_path(profile_name, service_name),
-        )
-        if not successful_collection_by_service.get(service_name):
+        if global_services:
             _emit(
                 progress_callback,
-                "ERROR",
+                "INFO",
                 "runner",
-                "service_merge_skipped",
-                message="No successful collection output found; existing raw data was preserved",
+                "global_services_end",
+                message="Global service collection finished",
+            )
+
+        client.regions = all_regions
+
+        for service_name, _ in services:
+            merged_rows = merged_data_by_service.get(service_name, [])
+            output_path = output_path_by_service.get(
+                service_name,
+                _default_raw_path(profile_name, service_name),
+            )
+            if not successful_collection_by_service.get(service_name):
+                _emit(
+                    progress_callback,
+                    "ERROR",
+                    "runner",
+                    "service_merge_skipped",
+                    message="No successful collection output found; existing raw data was preserved",
+                    step_service=service_name,
+                    path=output_path,
+                )
+                continue
+
+            _write_merged_data(output_path, merged_rows)
+            json_paths[service_name] = output_path
+            _emit(
+                progress_callback,
+                "INFO",
+                "runner",
+                "service_merge_written",
+                message="Merged service raw data written",
                 step_service=service_name,
+                collected=len(merged_rows),
                 path=output_path,
             )
-            continue
 
-        _write_merged_data(output_path, merged_rows)
-        json_paths[service_name] = output_path
+        event_counts = _summarize_events(run_events)
+        run_summary = {
+            **event_counts,
+            "health": _overall_health(result["service_results"]),
+        }
+        diagnostics = _diagnostics_from_events(run_events, result["service_results"])
+        result["diagnostics"] = diagnostics
+        result["run_summary"] = run_summary
+
+        formatter_base.create_report(
+            profile_name,
+            json_paths,
+            tenancy_name=client.tenancy_name,
+            extracted_at=run_start_ts,
+            diagnostics=diagnostics,
+            run_summary=run_summary,
+        )
+
+        run_duration_ms = int((time.time() - run_start) * 1000)
+        result["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        result["duration_ms"] = run_duration_ms
+        result["json_paths"] = dict(json_paths)
+
         _emit(
             progress_callback,
             "INFO",
             "runner",
-            "service_merge_written",
-            message="Merged service raw data written",
-            step_service=service_name,
-            collected=len(merged_rows),
-            path=output_path,
+            "run_end",
+            message="OCI inventory run finished",
+            run_id=run_id,
+            duration_ms=run_duration_ms,
+            report=result["report_path"],
+            health=run_summary["health"],
+            warning_count=run_summary["warning_count"],
+            permission_denied_count=run_summary["permission_denied_count"],
+            error_count=run_summary["error_count"],
         )
-
-    formatter_base.create_report(
-        profile_name,
-        json_paths,
-        tenancy_name=client.tenancy_name,
-        extracted_at=run_start_ts,
-    )
-
-    run_duration_ms = int((time.time() - run_start) * 1000)
-    result["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    result["duration_ms"] = run_duration_ms
-    result["json_paths"] = dict(json_paths)
-
-    _emit(
-        progress_callback,
-        "INFO",
-        "runner",
-        "run_end",
-        message="OCI inventory run finished",
-        run_id=run_id,
-        duration_ms=run_duration_ms,
-        report=result["report_path"],
-    )
-    return result
+        return result
 
 
 def _run_service_step(
@@ -380,10 +499,12 @@ def _run_service_step(
     output_path_by_service,
     successful_collection_by_service,
     progress_callback,
+    run_events,
     *,
     global_service=False,
 ):
     step_start = time.time()
+    event_start_idx = len(run_events)
     step_message = (
         "Global service collection step started"
         if global_service
@@ -404,6 +525,9 @@ def _run_service_step(
     collected = 0
     output_path = None
     detail = ""
+    warning_count = 0
+    permission_denied_count = 0
+    health = "ok"
 
     try:
         output_path = service_func(client)
@@ -417,26 +541,55 @@ def _run_service_step(
         if collected == 0:
             skipped = "1(no_data)"
     except Exception as e:
-        errors = 1
-        skipped = "1(error)"
         detail = str(e)
-        failed_message = (
-            "Global service collection step failed"
-            if global_service
-            else "Service collection step failed"
-        )
-        _emit(
-            progress_callback,
-            "ERROR",
-            "runner",
-            "service_run_failed",
-            message=failed_message,
-            step_service=service_name,
-            step_region=region,
-            detail=detail,
-        )
+        kind = classify_error(e, detail=detail)
+        output_path = _default_raw_path(client.profile_name, service_name)
+        output_path_by_service[service_name] = output_path
+        if kind == "permission_denied":
+            skipped = "1(permission_limited)"
+            successful_collection_by_service[service_name] = True
+            limited_message = (
+                "Global service collection step permission-limited"
+                if global_service
+                else "Service collection step permission-limited"
+            )
+            _emit(
+                progress_callback,
+                "WARN",
+                "runner",
+                "service_run_permission_limited",
+                message=limited_message,
+                step_service=service_name,
+                step_region=region,
+                detail=detail,
+                kind=kind,
+            )
+        else:
+            errors = 1
+            skipped = "1(error)"
+            failed_message = (
+                "Global service collection step failed"
+                if global_service
+                else "Service collection step failed"
+            )
+            _emit(
+                progress_callback,
+                "ERROR",
+                "runner",
+                "service_run_failed",
+                message=failed_message,
+                step_service=service_name,
+                step_region=region,
+                detail=detail,
+                kind=kind,
+            )
 
     duration_ms = int((time.time() - step_start) * 1000)
+    step_counts = _summarize_events(run_events[event_start_idx:])
+    warning_count = step_counts["warning_count"]
+    permission_denied_count = step_counts["permission_denied_count"]
+    errors = max(errors, step_counts["error_count"])
+    health = _step_health(collected, skipped, step_counts)
     finished_message = (
         "Global service collection step finished"
         if global_service
@@ -452,6 +605,9 @@ def _run_service_step(
         step_region=region,
         collected=collected,
         errors=errors,
+        warning_count=warning_count,
+        permission_denied_count=permission_denied_count,
+        health=health,
         skipped=skipped,
         duration_ms=duration_ms,
     )
@@ -461,6 +617,9 @@ def _run_service_step(
         "region": region,
         "collected": collected,
         "errors": errors,
+        "warning_count": warning_count,
+        "permission_denied_count": permission_denied_count,
+        "health": health,
         "skipped": skipped,
         "duration_ms": duration_ms,
         "output_path": output_path,

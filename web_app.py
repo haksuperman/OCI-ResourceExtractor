@@ -73,6 +73,8 @@ BASE_CSS = """
   --accent-soft: #e6f4f1;
   --warn: #9a5b00;
   --warn-soft: #fff7df;
+  --permission: #7c3d00;
+  --permission-soft: #fff4e5;
   --error: #b42318;
   --error-soft: #fff1f0;
   --ok: #0f7a45;
@@ -352,6 +354,7 @@ select:focus {
 .scope-badge,
 .status-badge,
 .level-badge,
+.health-badge,
 .count-badge,
 .chip {
   align-items: center;
@@ -373,6 +376,7 @@ select:focus {
   color: var(--accent-dark);
 }
 .status-badge.status-completed,
+.health-badge.health-ok,
 .level-badge.level-info {
   background: var(--ok-soft);
   color: var(--ok);
@@ -383,17 +387,28 @@ select:focus {
   color: var(--info);
 }
 .status-badge.status-failed,
+.health-badge.health-failed,
 .level-badge.level-error {
   background: var(--error-soft);
   color: var(--error);
 }
+.health-badge.health-partial,
 .level-badge.level-warn,
 .level-badge.level-warning {
   background: var(--warn-soft);
   color: var(--warn);
 }
+.health-badge.health-permission-limited {
+  background: var(--permission-soft);
+  color: var(--permission);
+}
+.health-badge.health-no-data {
+  background: #eef2f6;
+  color: var(--muted-strong);
+}
 .status-badge.status-unknown,
-.level-badge.level-other {
+.level-badge.level-other,
+.health-badge.health-unknown {
   background: #eef2f6;
   color: var(--muted-strong);
 }
@@ -599,7 +614,7 @@ tbody tr:hover td {
 }
 .summary-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 10px;
 }
 .summary-item {
@@ -797,13 +812,21 @@ def _icon(name):
 
 
 def _event_summary(events):
-    summary = {"events": len(events), "warnings": 0, "errors": 0, "collected": 0}
+    summary = {
+        "events": len(events),
+        "warnings": 0,
+        "permission_denied": 0,
+        "errors": 0,
+        "collected": 0,
+    }
     for event in events:
         level = str(event.get("level", "")).upper()
         if level == "WARN" or level == "WARNING":
             summary["warnings"] += 1
         elif level == "ERROR":
             summary["errors"] += 1
+        if event.get("kind") == "permission_denied":
+            summary["permission_denied"] += 1
 
         if event.get("event") == "step_end":
             try:
@@ -903,6 +926,8 @@ def _run_job(job_id, profile, regions, compartments, service_names):
             job["report_path"] = result.get("report_path")
             job["json_paths"] = result.get("json_paths", {})
             job["service_results"] = result.get("service_results", [])
+            job["run_summary"] = result.get("run_summary", {})
+            job["diagnostics"] = result.get("diagnostics", [])
             job["total_steps"] = result.get("total_steps", job.get("total_steps"))
             job["current_step"] = "completed"
     except Exception as exc:
@@ -1160,18 +1185,26 @@ function levelClass(value) {
   }
   return "level-other";
 }
+function healthClass(value) {
+  const normalized = cell(value).toLowerCase().replace(/_/g, "-");
+  if (["ok", "partial", "permission-limited", "failed", "no-data"].includes(normalized)) {
+    return `health-${normalized}`;
+  }
+  return "health-unknown";
+}
 function summarize(events) {
   return events.reduce((summary, event) => {
     const level = cell(event.level).toUpperCase();
     if (level === "WARN" || level === "WARNING") summary.warnings += 1;
     if (level === "ERROR") summary.errors += 1;
+    if (event.kind === "permission_denied") summary.permissionDenied += 1;
     if (event.event === "step_end") {
       const collected = Number(event.collected || 0);
       if (!Number.isNaN(collected)) summary.collected += collected;
     }
     summary.events += 1;
     return summary;
-  }, { events: 0, warnings: 0, errors: 0, collected: 0 });
+  }, { events: 0, warnings: 0, permissionDenied: 0, errors: 0, collected: 0 });
 }
 function setText(selector, value) {
   const node = document.querySelector(selector);
@@ -1194,6 +1227,7 @@ function eventMatchesFilter(event) {
   const query = (document.querySelector("[data-log-search]")?.value || "").trim().toLowerCase();
   if (activeLogFilter === "warn" && level !== "WARN" && level !== "WARNING") return false;
   if (activeLogFilter === "error" && level !== "ERROR") return false;
+  if (activeLogFilter === "permission" && event.kind !== "permission_denied") return false;
   if (!query) return true;
   return [
     event.timestamp,
@@ -1201,6 +1235,11 @@ function eventMatchesFilter(event) {
     event.event,
     event.step_service || event.service,
     event.step_region || event.region,
+    event.compartment,
+    event.resource,
+    event.kind,
+    event.status,
+    event.code,
     event.message,
     event.detail
   ].some((value) => cell(value).toLowerCase().includes(query));
@@ -1218,13 +1257,15 @@ function renderEvents() {
         <td>${esc(event.event)}</td>
         <td>${esc(service)}</td>
         <td>${esc(region)}</td>
+        <td>${esc(event.kind)}</td>
+        <td>${esc(event.code || event.status)}</td>
         <td>${esc(event.collected)}</td>
         <td>${esc(message)}</td>
       </tr>
     `;
   }).join("");
   document.querySelector("[data-events]").innerHTML =
-    rows || `<tr><td class="empty-cell" colspan="7">표시할 이벤트가 없습니다.</td></tr>`;
+    rows || `<tr><td class="empty-cell" colspan="9">표시할 이벤트가 없습니다.</td></tr>`;
   setText("[data-visible-event-count]", events.length);
 }
 function renderResults(results) {
@@ -1234,14 +1275,17 @@ function renderResults(results) {
     <tr>
       <td>${esc(result.service)}</td>
       <td>${esc(result.region)}</td>
+      <td><span class="health-badge ${healthClass(result.health)}">${esc(result.health)}</span></td>
       <td>${esc(result.collected)}</td>
+      <td>${esc(result.warning_count)}</td>
+      <td>${esc(result.permission_denied_count)}</td>
       <td>${esc(result.errors)}</td>
       <td>${esc(result.skipped)}</td>
       <td>${esc(result.duration_ms)}</td>
       <td>${esc(result.output_path || result.detail || "")}</td>
     </tr>
   `).join("");
-  target.innerHTML = rows || `<tr><td class="empty-cell" colspan="7">완료 후 서비스 결과가 표시됩니다.</td></tr>`;
+  target.innerHTML = rows || `<tr><td class="empty-cell" colspan="10">완료 후 서비스 결과가 표시됩니다.</td></tr>`;
 }
 async function copyImportantLogs() {
   const rows = latestEvents
@@ -1255,6 +1299,10 @@ async function copyImportantLogs() {
       event.event,
       event.step_service || event.service,
       event.step_region || event.region,
+      event.compartment,
+      event.resource,
+      event.status,
+      event.code,
       event.message || event.detail || ""
     ].map(cell).join(" | "));
 
@@ -1291,9 +1339,11 @@ async function refreshJob() {
   setText("[data-started-at]", job.started_at);
   setText("[data-finished-at]", job.finished_at);
   const summary = summarize(job.events || []);
+  const runSummary = job.run_summary || {};
   setText("[data-event-count]", summary.events);
-  setText("[data-warning-count]", summary.warnings);
-  setText("[data-error-count]", summary.errors);
+  setText("[data-warning-count]", runSummary.warning_count ?? summary.warnings);
+  setText("[data-permission-denied-count]", runSummary.permission_denied_count ?? summary.permissionDenied);
+  setText("[data-error-count]", runSummary.error_count ?? summary.errors);
   setText("[data-collected-count]", summary.collected);
   updateProgress(job);
 
@@ -1672,6 +1722,8 @@ async def create_job(request: Request):
             "report_path": None,
             "json_paths": {},
             "service_results": [],
+            "run_summary": {},
+            "diagnostics": [],
             "events": [],
             "error": "",
         }
@@ -1702,6 +1754,13 @@ def job_detail(job_id):
 
     events = job.get("events", [])
     summary = _event_summary(events)
+    run_summary = job.get("run_summary") or {}
+    warning_count = run_summary.get("warning_count", summary["warnings"])
+    permission_denied_count = run_summary.get(
+        "permission_denied_count",
+        summary["permission_denied"],
+    )
+    error_count = run_summary.get("error_count", summary["errors"])
     progress = _progress_details(job)
     download_hidden = "" if job.get("status") == "completed" and job.get("report_path") else "hidden"
     error_hidden = "" if job.get("error") else "hidden"
@@ -1745,8 +1804,9 @@ def job_detail(job_id):
       <div class="summary-strip">
         <div class="summary-item"><span>Events</span><strong data-event-count>{summary['events']}</strong></div>
         <div class="summary-item"><span>Collected Rows</span><strong data-collected-count>{summary['collected']}</strong></div>
-        <div class="summary-item"><span>Warnings</span><strong data-warning-count>{summary['warnings']}</strong></div>
-        <div class="summary-item"><span>Errors</span><strong data-error-count>{summary['errors']}</strong></div>
+        <div class="summary-item"><span>Warnings</span><strong data-warning-count>{warning_count}</strong></div>
+        <div class="summary-item"><span>Permission Denied</span><strong data-permission-denied-count>{permission_denied_count}</strong></div>
+        <div class="summary-item"><span>Errors</span><strong data-error-count>{error_count}</strong></div>
       </div>
       <div class="chip-row">{_render_job_chips(job)}</div>
       <div class="actions">
@@ -1770,7 +1830,10 @@ def job_detail(job_id):
           <tr>
             <th>Service</th>
             <th>Region</th>
+            <th>Health</th>
             <th>Collected</th>
+            <th>Warnings</th>
+            <th>Permission Denied</th>
             <th>Errors</th>
             <th>Skipped</th>
             <th>Duration ms</th>
@@ -1778,7 +1841,7 @@ def job_detail(job_id):
           </tr>
         </thead>
         <tbody data-results>
-          <tr><td class="empty-cell" colspan="7">완료 후 서비스 결과가 표시됩니다.</td></tr>
+          <tr><td class="empty-cell" colspan="10">완료 후 서비스 결과가 표시됩니다.</td></tr>
         </tbody>
       </table>
     </div>
@@ -1794,6 +1857,7 @@ def job_detail(job_id):
     <div class="log-toolbar">
       <div class="segmented" aria-label="Log level filter">
         <button class="active" type="button" data-log-filter="all">전체</button>
+        <button type="button" data-log-filter="permission">Permission</button>
         <button type="button" data-log-filter="warn">WARN</button>
         <button type="button" data-log-filter="error">ERROR</button>
       </div>
@@ -1809,12 +1873,14 @@ def job_detail(job_id):
             <th>Event</th>
             <th>Service</th>
             <th>Region</th>
+            <th>Kind</th>
+            <th>Code</th>
             <th>Count</th>
             <th>Message</th>
           </tr>
         </thead>
         <tbody data-events>
-          <tr><td class="empty-cell" colspan="7">이벤트를 불러오는 중입니다.</td></tr>
+          <tr><td class="empty-cell" colspan="9">이벤트를 불러오는 중입니다.</td></tr>
         </tbody>
       </table>
     </div>
@@ -1850,6 +1916,8 @@ def job_status(job_id):
         "report_exists": bool(report_path and os.path.exists(report_path)),
         "events": job.get("events", []),
         "service_results": job.get("service_results", []),
+        "run_summary": job.get("run_summary", {}),
+        "diagnostics": job.get("diagnostics", []),
         "error": job.get("error", ""),
     }
 

@@ -227,6 +227,19 @@ Codex는 이 저장소에서 다음 역할을 수행합니다.
 - 코드 리뷰 시 collector 코드와 서비스별 API 문서를 함께 검토해 실제 호출 범위와 문서가 일치하는지 확인한다.
 - 원칙: 사용자는 문서만 읽고도 "어떤 클래스의 어떤 메소드를 왜 호출하는지"를 이해할 수 있어야 한다.
 
+20. Permission-Limited Collection Contract
+- 본 계약은 `compute` 포함 전체 서비스에 공통 적용한다.
+- 권한 부족은 애플리케이션 전체 실패가 아니라 서비스/리전/컴파트먼트/리소스 범위의 부분 실패로 취급한다.
+- 오류 분류는 공통 `log_utils.classify_error()` 기준을 사용한다: `permission_denied`, `not_found`, `rate_limited`, `service_error`, `unexpected_error`.
+- `permission_denied` 기준은 `401`, `403`, `404 NotAuthorizedOrNotFound`로 고정한다.
+- 권한 없는 `list_*` 범위는 `WARN`으로 구조화 로그에 남기고 해당 범위만 스킵한다.
+- 권한 없는 `get_*`/상세/관계 조회는 해당 리소스의 `_errors`에 남기고 가능한 나머지 raw 수집을 계속한다.
+- 서비스 전체가 권한 부족이어도 runner는 빈 raw list 파일을 생성해 Excel 리포트 생성이 이어지게 한다.
+- runner는 서비스 결과에 `warning_count`, `permission_denied_count`, `error_count`, `health`를 남긴다.
+- `health` 값은 `ok`, `partial`, `permission_limited`, `failed`, `no_data` 중 하나만 사용한다.
+- formatter는 권한 진단 요약을 서비스별 formatter에서 만들지 않는다. 진단 요약과 `99-Run_Diagnostics` 시트는 runner와 `formatter_base` 공통 로직만 담당한다.
+- 서비스별 API 문서에는 권한 제한 profile 검증 관점을 포함한다: 권한 없는 scope에서 서비스 스킵/로그/웹/Excel 표현이 일치해야 한다.
+
 ## Quality Gates Before Merging Changes
 코드 변경 후 최소 확인 항목:
 1. 문법 검사: `python3 -m py_compile main.py common.py collectors/*.py formatters/*.py`
@@ -235,6 +248,7 @@ Codex는 이 저장소에서 다음 역할을 수행합니다.
 4. Excel 파일 생성 및 시트 구성 확인
 5. 주요 컬럼 정렬/누락 여부 확인
 6. 실패 로그가 무음 처리되지 않는지 확인
+7. 권한 제한 profile 또는 fake 권한 오류로 서비스 스킵/로그/웹/Excel 표현이 일치하는지 확인
 
 ## Change Policy
 변경은 작고 검증 가능하게 진행합니다.
@@ -319,6 +333,7 @@ Codex는 이 저장소에서 다음 역할을 수행합니다.
 - 주요/비주요 컬럼 분류 기준은 서비스 공통으로 `Primary Column Rule`을 따른다.
 - 도메인 상세 데이터는 가능한 한 도메인별 시트로 분리하며, 데이터가 없는 상세 시트는 생성하지 않는다.
 - 실패는 `_errors`에 누적하고, `except: pass` 없이 부분 실패를 노출한다.
+- 권한 부족은 공통 오류 분류와 `permission_limited` health로 노출하고, 가능한 raw는 계속 저장한다.
 
 ## Deterministic Context Lock (2026-03-06)
 이 섹션은 컨텍스트 초기화 후에도 동일 작업 재현을 위한 "정확값 스펙"이다.
@@ -327,6 +342,7 @@ Codex는 이 저장소에서 다음 역할을 수행합니다.
 1. Summary/Tab Spec (Exact)
 - Summary 제목: `OCI Resource Report`
 - 탭 정렬: `Summary` 고정 맨 앞 + 나머지 `N-<SheetName>`를 `N` 오름차순 정렬
+- WARN/ERROR 진단이 있으면 `99-Run_Diagnostics` 시트를 생성하며, 탭 정렬상 마지막 진단 시트로 둔다
 
 2. Category Spec (Exact)
 - category 계산식: 워크시트 이름에서 첫 `-` 기준 오른쪽 문자열
