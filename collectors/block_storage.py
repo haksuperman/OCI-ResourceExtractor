@@ -288,6 +288,66 @@ def collect(client):
                     detail=str(e),
                 )
 
+            try:
+                volume_backups = common.list_call_get_all_results(
+                    bs_client.list_volume_backups,
+                    compartment_id=comp.id,
+                ).data
+                _log(
+                    "INFO",
+                    region,
+                    comp_name,
+                    "volume_backups_listed",
+                    count=len(volume_backups),
+                )
+                for vb in volume_backups:
+                    item = oci.util.to_dict(vb)
+                    item["resource_type"] = "volume_backup"
+                    item["region_name"] = region
+                    item["compartment_name"] = comp_name
+                    item["_errors"] = []
+                    all_resources.append(_build_resource(item))
+                    total_count += 1
+            except Exception as e:
+                error_count += 1
+                _log(
+                    "WARN",
+                    region,
+                    comp_name,
+                    "volume_backup_listing_failed",
+                    detail=str(e),
+                )
+
+            try:
+                boot_volume_backups = common.list_call_get_all_results(
+                    bs_client.list_boot_volume_backups,
+                    compartment_id=comp.id,
+                ).data
+                _log(
+                    "INFO",
+                    region,
+                    comp_name,
+                    "boot_volume_backups_listed",
+                    count=len(boot_volume_backups),
+                )
+                for bvb in boot_volume_backups:
+                    item = oci.util.to_dict(bvb)
+                    item["resource_type"] = "boot_volume_backup"
+                    item["region_name"] = region
+                    item["compartment_name"] = comp_name
+                    item["_errors"] = []
+                    all_resources.append(_build_resource(item))
+                    total_count += 1
+            except Exception as e:
+                error_count += 1
+                _log(
+                    "WARN",
+                    region,
+                    comp_name,
+                    "boot_volume_backup_listing_failed",
+                    detail=str(e),
+                )
+
             for ad_name in ad_names:
                 try:
                     volumes = common.list_call_get_all_results(
@@ -336,40 +396,6 @@ def collect(client):
                     )
 
                 try:
-                    volume_backups = common.list_call_get_all_results(
-                        bs_client.list_volume_backups,
-                        compartment_id=comp.id,
-                        availability_domain=ad_name,
-                    ).data
-                    _log(
-                        "INFO",
-                        region,
-                        comp_name,
-                        "volume_backups_listed",
-                        ad=ad_name,
-                        count=len(volume_backups),
-                    )
-                    for vb in volume_backups:
-                        item = oci.util.to_dict(vb)
-                        item["resource_type"] = "volume_backup"
-                        item["region_name"] = region
-                        item["compartment_name"] = comp_name
-                        item["availability_domain_name"] = ad_name
-                        item["_errors"] = []
-                        all_resources.append(_build_resource(item))
-                        total_count += 1
-                except Exception as e:
-                    error_count += 1
-                    _log(
-                        "WARN",
-                        region,
-                        comp_name,
-                        "volume_backup_listing_failed",
-                        ad=ad_name,
-                        detail=str(e),
-                    )
-
-                try:
                     boot_volumes = common.list_call_get_all_results(
                         bs_client.list_boot_volumes,
                         compartment_id=comp.id,
@@ -412,40 +438,6 @@ def collect(client):
                         region,
                         comp_name,
                         "boot_volume_listing_failed",
-                        ad=ad_name,
-                        detail=str(e),
-                    )
-
-                try:
-                    boot_volume_backups = common.list_call_get_all_results(
-                        bs_client.list_boot_volume_backups,
-                        compartment_id=comp.id,
-                        availability_domain=ad_name,
-                    ).data
-                    _log(
-                        "INFO",
-                        region,
-                        comp_name,
-                        "boot_volume_backups_listed",
-                        ad=ad_name,
-                        count=len(boot_volume_backups),
-                    )
-                    for bvb in boot_volume_backups:
-                        item = oci.util.to_dict(bvb)
-                        item["resource_type"] = "boot_volume_backup"
-                        item["region_name"] = region
-                        item["compartment_name"] = comp_name
-                        item["availability_domain_name"] = ad_name
-                        item["_errors"] = []
-                        all_resources.append(_build_resource(item))
-                        total_count += 1
-                except Exception as e:
-                    error_count += 1
-                    _log(
-                        "WARN",
-                        region,
-                        comp_name,
-                        "boot_volume_backup_listing_failed",
                         ad=ad_name,
                         detail=str(e),
                     )

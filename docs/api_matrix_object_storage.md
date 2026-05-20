@@ -15,8 +15,8 @@ Object Storage 수집은 OCI Console의 Bucket 상세 화면에서 운영자가 
 | SDK 클래스명 | 메소드명 | 호출 목적 | 분류 이유 | raw 저장 위치 | 호출 단위 | 호출량 영향 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `oci.object_storage.ObjectStorageClient` | `get_namespace` | region별 Object Storage namespace 확인 | 모든 bucket API 호출의 필수 입력값 | `object_storage_raw.namespace_name` | region 1회 | region 수에 비례 |
-| `oci.object_storage.ObjectStorageClient` | `list_buckets` | compartment 내 bucket 목록 수집 | 마스터 bucket 리소스 발견의 시작점 | `object_storage_raw` | region + compartment | compartment 수에 비례 |
-| `oci.object_storage.ObjectStorageClient` | `get_bucket` | bucket 상세 보강 | Console 상세의 access/versioning/tiering/KMS/size/count 정보를 재현하기 위해 필요 | `object_storage_raw` | Bucket 1개당 1회 | Bucket 수에 비례 |
+| `oci.object_storage.ObjectStorageClient` | `list_buckets` | compartment 내 bucket 목록 수집(`fields=["tags"]`) | 마스터 bucket 리소스 발견의 시작점 | `object_storage_raw` | region + compartment | compartment 수에 비례 |
+| `oci.object_storage.ObjectStorageClient` | `get_bucket` | bucket 상세 보강(`fields=["approximateCount", "approximateSize", "autoTiering"]`) | Console 상세의 access/versioning/tiering/KMS/size/count 정보를 재현하기 위해 필요 | `object_storage_raw` | Bucket 1개당 1회 | Bucket 수에 비례 |
 | `oci.object_storage.ObjectStorageClient` | `list_retention_rules` | bucket retention rule 목록 수집 | 보존 정책은 삭제/컴플라이언스 영향 판단 핵심 정보 | `object_storage_enriched.retention_rules[]` | Bucket 1개당 1회 | Bucket 수에 비례 |
 
 ## P1 APIs

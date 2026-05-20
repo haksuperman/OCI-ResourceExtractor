@@ -87,15 +87,15 @@
   - 호출 목적: block volume backup 목록 조회
   - 분류 이유: 백업 존재 여부와 백업 상태 확인에 필요하다
   - raw 저장 위치: `block_storage_raw`
-  - 호출 단위: `region + compartment + availability_domain`
-  - 호출량 영향: compartment x AD 수에 비례
+  - 호출 단위: `region + compartment`
+  - 호출량 영향: compartment 수에 비례
 
 - `oci.core.BlockstorageClient.list_boot_volume_backups`
   - 호출 목적: boot volume backup 목록 조회
   - 분류 이유: boot volume 백업 존재 여부와 백업 상태 확인에 필요하다
   - raw 저장 위치: `block_storage_raw`
-  - 호출 단위: `region + compartment + availability_domain`
-  - 호출량 영향: compartment x AD 수에 비례
+  - 호출 단위: `region + compartment`
+  - 호출량 영향: compartment 수에 비례
 
 - `oci.core.BlockstorageClient.list_volume_groups`
   - 호출 목적: volume group 목록 조회

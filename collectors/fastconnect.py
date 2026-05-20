@@ -101,6 +101,32 @@ def collect(client):
                 )
                 continue
 
+            try:
+                bandwidth_shapes = common.list_call_get_all_results(
+                    network_client.list_virtual_circuit_bandwidth_shapes,
+                    compartment_id=comp.id,
+                ).data
+                bandwidth_shape_dicts = [_to_dict(shape) for shape in bandwidth_shapes]
+                bandwidth_shape_error = None
+                _log(
+                    "INFO",
+                    region,
+                    comp_name,
+                    "bandwidth_shapes_listed",
+                    count=len(bandwidth_shape_dicts),
+                )
+            except Exception as e:
+                error_count += 1
+                bandwidth_shape_dicts = []
+                bandwidth_shape_error = str(e)
+                _log(
+                    "WARN",
+                    region,
+                    comp_name,
+                    "bandwidth_shapes_listing_failed",
+                    detail=str(e),
+                )
+
             for circuit in circuits:
                 total_count += 1
                 circuit_id = getattr(circuit, "id", None)
@@ -239,21 +265,16 @@ def collect(client):
                     "associated tunnels listing failed",
                     virtual_circuit_id=circuit_id,
                 )
-                bandwidth_shapes = _list_data(
-                    network_client.list_virtual_circuit_bandwidth_shapes,
-                    errors,
-                    err_ref,
-                    "bandwidth shapes listing failed",
-                    virtual_circuit_id=circuit_id,
-                )
                 error_count += err_ref[0]
+                if bandwidth_shape_error:
+                    errors.append(f"bandwidth shapes listing failed: {bandwidth_shape_error}")
 
                 fc_enriched["public_prefixes"] = [_to_dict(x) for x in public_prefixes]
                 fc_enriched["cross_connect_mappings"] = [
                     _to_dict(x) for x in cross_connect_mappings
                 ]
                 fc_enriched["associated_tunnels"] = [_to_dict(x) for x in associated_tunnels]
-                fc_enriched["bandwidth_shapes"] = [_to_dict(x) for x in bandwidth_shapes]
+                fc_enriched["bandwidth_shapes"] = bandwidth_shape_dicts
 
                 all_fastconnect.append(resource)
 

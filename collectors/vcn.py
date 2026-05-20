@@ -19,7 +19,15 @@ def _log(level, region, compartment, event, resource_id="-", detail="", **fields
     )
 
 
-def _list_and_convert(list_call, region, compartment, vcn_id, resource_name, error_list, **kwargs):
+def _list_and_convert(
+    list_call,
+    region,
+    compartment,
+    log_resource_id,
+    resource_name,
+    error_list,
+    **kwargs,
+):
     try:
         data = common.list_call_get_all_results(list_call, **kwargs).data
         converted = [oci.util.to_dict(x) for x in data]
@@ -28,7 +36,7 @@ def _list_and_convert(list_call, region, compartment, vcn_id, resource_name, err
             region,
             compartment,
             f"{resource_name}_listed",
-            resource_id=vcn_id,
+            resource_id=log_resource_id,
             count=len(converted),
         )
         return converted, 0
@@ -39,7 +47,7 @@ def _list_and_convert(list_call, region, compartment, vcn_id, resource_name, err
             region,
             compartment,
             f"{resource_name}_listing_failed",
-            resource_id=vcn_id,
+            resource_id=log_resource_id,
             detail=str(e),
         )
         return [], 1
@@ -244,7 +252,8 @@ def collect(client):
                 vcn_raw = resource["vcn_raw"]
                 vcn_raw["region_name"] = region
                 vcn_raw["compartment_name"] = comp_name
-                resource["_errors"].extend(links["errors"])
+                # Compartment-wide DRG/FastConnect lookup failures are logged once.
+                # Keep resource _errors focused on lookups scoped to this VCN.
 
                 subnets, ec = _list_and_convert(
                     network_client.list_subnets,

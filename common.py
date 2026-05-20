@@ -63,8 +63,14 @@ def call_with_retry(call_func, *args, **kwargs):
 def list_call_get_all_results(list_func, *args, **kwargs):
     _respect_min_interval()
     retry_kwargs = dict(kwargs)
+    added_retry_strategy = "retry_strategy" not in retry_kwargs
     retry_kwargs.setdefault("retry_strategy", DEFAULT_RETRY_STRATEGY)
-    return oci.pagination.list_call_get_all_results(list_func, *args, **retry_kwargs)
+    try:
+        return oci.pagination.list_call_get_all_results(list_func, *args, **retry_kwargs)
+    except TypeError as e:
+        if added_retry_strategy and "retry_strategy" in str(e):
+            return oci.pagination.list_call_get_all_results(list_func, *args, **kwargs)
+        raise
 
 
 def service_error_detail(error):

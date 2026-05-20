@@ -49,7 +49,7 @@ def collect(client):
                     os_client.list_buckets,
                     namespace_name=namespace,
                     compartment_id=comp.id,
-                    fields="tags,approximateCount,approximateSize",
+                    fields=["tags"],
                 ).data
                 _log(
                     "INFO",
@@ -89,6 +89,7 @@ def collect(client):
                         os_client.get_bucket,
                         namespace_name=namespace,
                         bucket_name=bucket_name,
+                        fields=["approximateCount", "approximateSize", "autoTiering"],
                     ).data
                     bucket_raw = oci.util.to_dict(detail)
                     bucket_raw["region_name"] = region
