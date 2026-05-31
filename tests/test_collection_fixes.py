@@ -11,7 +11,7 @@ from unittest import mock
 import oci
 
 import common
-from collectors import object_storage, vcn
+from collectors import identity, object_storage, vcn
 
 
 class FakeResponse:
@@ -124,6 +124,211 @@ class FakeNetworkClient:
 
     def list_network_security_groups(self, **kwargs):
         return FakeResponse([])
+
+
+class FakeIdentityClient:
+    def list_compartments(self, compartment_id, **kwargs):
+        return FakeResponse(
+            [
+                FakeModel(
+                    id="ocid1.compartment.oc1..security",
+                    name="security",
+                    description="security compartment",
+                    lifecycle_state="ACTIVE",
+                    compartment_id=compartment_id,
+                )
+            ]
+        )
+
+    def get_compartment(self, compartment_id, **kwargs):
+        if compartment_id == "ocid1.tenancy.oc1..unit":
+            return FakeResponse(
+                FakeModel(
+                    id=compartment_id,
+                    name="unit-tenancy",
+                    description="root",
+                    lifecycle_state="ACTIVE",
+                )
+            )
+        return FakeResponse(
+            FakeModel(
+                id=compartment_id,
+                name="security",
+                description="security compartment",
+                lifecycle_state="ACTIVE",
+                compartment_id="ocid1.tenancy.oc1..unit",
+            )
+        )
+
+    def list_users(self, compartment_id, **kwargs):
+        return FakeResponse(
+            [
+                FakeModel(
+                    id="ocid1.user.oc1..alice",
+                    name="alice",
+                    lifecycle_state="ACTIVE",
+                    email="alice@example.com",
+                )
+            ]
+        )
+
+    def get_user(self, user_id, **kwargs):
+        return FakeResponse(
+            FakeModel(
+                id=user_id,
+                name="alice",
+                lifecycle_state="ACTIVE",
+                email="alice@example.com",
+                email_verified=True,
+            )
+        )
+
+    def list_user_group_memberships(self, compartment_id, **kwargs):
+        return FakeResponse(
+            [
+                FakeModel(
+                    id="ocid1.usergroupmembership.oc1..alice-admins",
+                    user_id=kwargs.get("user_id"),
+                    group_id="ocid1.group.oc1..admins",
+                    time_created="2026-01-01T00:00:00Z",
+                )
+            ]
+        )
+
+    def list_groups(self, compartment_id, **kwargs):
+        return FakeResponse(
+            [
+                FakeModel(
+                    id="ocid1.group.oc1..admins",
+                    name="admins",
+                    lifecycle_state="ACTIVE",
+                )
+            ]
+        )
+
+    def get_group(self, group_id, **kwargs):
+        return FakeResponse(
+            FakeModel(
+                id=group_id,
+                name="admins",
+                lifecycle_state="ACTIVE",
+                description="Administrators",
+            )
+        )
+
+    def list_dynamic_groups(self, compartment_id, **kwargs):
+        return FakeResponse(
+            [
+                FakeModel(
+                    id="ocid1.dynamicgroup.oc1..instances",
+                    name="instances",
+                    lifecycle_state="ACTIVE",
+                    matching_rule="ALL {instance.compartment.id = 'ocid1.compartment.oc1..security'}",
+                )
+            ]
+        )
+
+    def get_dynamic_group(self, dynamic_group_id, **kwargs):
+        return FakeResponse(
+            FakeModel(
+                id=dynamic_group_id,
+                name="instances",
+                lifecycle_state="ACTIVE",
+                matching_rule="ALL {instance.compartment.id = 'ocid1.compartment.oc1..security'}",
+            )
+        )
+
+    def list_policies(self, compartment_id, **kwargs):
+        if compartment_id != "ocid1.tenancy.oc1..unit":
+            return FakeResponse([])
+        return FakeResponse(
+            [
+                FakeModel(
+                    id="ocid1.policy.oc1..admins",
+                    name="admins-policy",
+                    lifecycle_state="ACTIVE",
+                    statements=["Allow group admins to manage all-resources in tenancy"],
+                )
+            ]
+        )
+
+    def get_policy(self, policy_id, **kwargs):
+        return FakeResponse(
+            FakeModel(
+                id=policy_id,
+                name="admins-policy",
+                lifecycle_state="ACTIVE",
+                statements=["Allow group admins to manage all-resources in tenancy"],
+            )
+        )
+
+    def list_tag_namespaces(self, compartment_id, **kwargs):
+        return FakeResponse(
+            [
+                FakeModel(
+                    id="ocid1.tagnamespace.oc1..ops",
+                    name="ops",
+                    compartment_id="ocid1.compartment.oc1..security",
+                    lifecycle_state="ACTIVE",
+                )
+            ]
+        )
+
+    def get_tag_namespace(self, tag_namespace_id, **kwargs):
+        return FakeResponse(
+            FakeModel(
+                id=tag_namespace_id,
+                name="ops",
+                compartment_id="ocid1.compartment.oc1..security",
+                lifecycle_state="ACTIVE",
+                is_retired=False,
+            )
+        )
+
+    def list_tags(self, tag_namespace_id, **kwargs):
+        return FakeResponse(
+            [
+                FakeModel(
+                    id="ocid1.tag.oc1..environment",
+                    name="environment",
+                    lifecycle_state="ACTIVE",
+                    is_cost_tracking=True,
+                )
+            ]
+        )
+
+    def get_tag(self, tag_namespace_id, tag_name, **kwargs):
+        return FakeResponse(
+            FakeModel(
+                id="ocid1.tag.oc1..environment",
+                name=tag_name,
+                lifecycle_state="ACTIVE",
+                is_cost_tracking=True,
+                description="Environment",
+            )
+        )
+
+    def list_network_sources(self, compartment_id, **kwargs):
+        return FakeResponse(
+            [
+                FakeModel(
+                    id="ocid1.networksource.oc1..corp",
+                    name="corp",
+                    lifecycle_state="ACTIVE",
+                    public_source_list=["203.0.113.0/24"],
+                )
+            ]
+        )
+
+    def get_network_source(self, network_source_id, **kwargs):
+        return FakeResponse(
+            FakeModel(
+                id=network_source_id,
+                name="corp",
+                lifecycle_state="ACTIVE",
+                public_source_list=["203.0.113.0/24"],
+            )
+        )
 
 
 class CollectionFixesTest(unittest.TestCase):
@@ -302,6 +507,46 @@ class CollectionFixesTest(unittest.TestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["object_storage_raw"]["approximate_count"], 7)
         self.assertEqual(data[0]["object_storage_raw"]["namespace_name"], "unitns")
+
+    def test_identity_collector_writes_requested_iam_resource_types(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                with mock.patch.object(
+                    identity.common,
+                    "create_client",
+                    return_value=FakeIdentityClient(),
+                ):
+                    path = identity.collect(FakeInventoryClient())
+                data = json.loads(Path(path).read_text(encoding="utf-8"))
+            finally:
+                os.chdir(old_cwd)
+
+        resource_types = {row["identity_raw"]["resource_type"] for row in data}
+        self.assertEqual(
+            resource_types,
+            {
+                "user",
+                "group",
+                "dynamic_group",
+                "policy",
+                "compartment",
+                "tag_namespace",
+                "network_source",
+            },
+        )
+        self.assertTrue(
+            all(set(row.keys()) == {"identity_raw", "identity_enriched", "_errors"} for row in data)
+        )
+        user = next(row for row in data if row["identity_raw"]["resource_type"] == "user")
+        membership = user["identity_enriched"]["group_memberships"][0]
+        self.assertEqual(membership["user_name"], "alice")
+        self.assertEqual(membership["group_name"], "admins")
+        tag_namespace = next(
+            row for row in data if row["identity_raw"]["resource_type"] == "tag_namespace"
+        )
+        self.assertEqual(tag_namespace["identity_enriched"]["tags"][0]["name"], "environment")
 
     def test_vcn_compartment_link_errors_are_not_copied_to_each_vcn(self):
         fake_links = {

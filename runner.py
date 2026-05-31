@@ -12,6 +12,7 @@ from collectors import (
     dns,
     fastconnect,
     file_storage,
+    identity,
     instance_pools,
     load_balancer,
     mysql,
@@ -29,6 +30,7 @@ from log_utils import classify_error, log_event, log_event_sink
 SERVICE_REGISTRY = [
     {"name": "compute", "scope": "regional", "collector": compute.collect},
     {"name": "instance_pools", "scope": "regional", "collector": instance_pools.collect},
+    {"name": "identity", "scope": "global", "collector": identity.collect},
     {"name": "vcn", "scope": "regional", "collector": vcn.collect},
     {"name": "waf", "scope": "regional", "collector": waf.collect},
     {"name": "waf_edge", "scope": "regional", "collector": waf_edge.collect},

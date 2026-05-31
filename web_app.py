@@ -24,6 +24,7 @@ MAX_EVENTS_PER_JOB = 500
 SERVICE_LABELS = {
     "compute": "Compute Instance",
     "instance_pools": "Instance Pools / Autoscaling",
+    "identity": "IAM / Identity",
     "vcn": "VCN",
     "vpn": "VPN",
     "fastconnect": "FastConnect",
@@ -42,6 +43,7 @@ SERVICE_LABELS = {
 
 SERVICE_GROUPS = [
     ("Compute", ["compute", "instance_pools"]),
+    ("Identity & Security", ["identity", "waf", "waf_edge"]),
     (
         "Networking",
         [
@@ -55,7 +57,6 @@ SERVICE_GROUPS = [
     ),
     ("Storage", ["block_storage", "file_storage", "object_storage"]),
     ("Databases", ["dbcs", "adb", "mysql"]),
-    ("Identity & Security", ["waf", "waf_edge"]),
 ]
 
 BASE_CSS = """

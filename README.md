@@ -36,7 +36,7 @@ OCI_Reports/OCI_Report_<profile>.xlsx
 | Storage | Block Storage, File Storage, Object Storage |
 | Oracle AI Database | Oracle Base Database Service(DBCS), Autonomous Database(ADB) |
 | Databases | MySQL HeatWave |
-| Identity & Security | WAF, WAF Edge |
+| Identity & Security | IAM / Identity, WAF, WAF Edge |
 
 서비스별 상세 API 호출 범위는 `docs/api_matrix_<service>.md`에 정리되어 있습니다.
 
