@@ -122,6 +122,18 @@ uvicorn web_app:app --host 127.0.0.1 --port 8088
 http://127.0.0.1:8088
 ```
 
+웹 접근 제어가 필요하면 DB 없이 로그인 기능을 켤 수 있습니다. 로컬 테스트에서는 비밀번호가 명령줄이나 쉘 히스토리에 남지 않도록 숨김 입력 방식의 실행 스크립트를 사용할 수 있습니다.
+
+```bash
+python3 scripts/run_web_with_auth.py --host 127.0.0.1 --port 8088
+```
+
+운영처럼 고정 계정을 환경변수로 주입해야 한다면 먼저 비밀번호 해시를 생성합니다.
+
+```bash
+python3 scripts/generate_password_hash.py
+```
+
 웹 화면에서는 다음 작업을 할 수 있습니다.
 
 - OCI profile 선택
@@ -212,7 +224,76 @@ Completed Steps: 4 / 16
 OCI_Reports/OCI_Report_<profile>.xlsx
 ```
 
-주의: 현재 웹 앱에는 자체 로그인 기능이 없습니다. 운영 서버에 올릴 때는 `127.0.0.1` 바인딩, VPN/사내망 접근 제한, reverse proxy 인증 같은 외부 접근 통제를 반드시 함께 구성하세요.
+### 웹 로그인 설정
+
+웹 로그인은 FastAPI 앱 내부에서 처리합니다. 로그인 성공 시 HMAC 서명 쿠키를 발급하고, `/`, `/jobs`, `/api/*`, 다운로드 경로를 포함한 주요 화면 접근을 보호합니다. DB나 외부 인증 연동은 사용하지 않습니다.
+
+로그인 POST에는 raw password를 넣지 않습니다. 로그인 화면이 1회용 challenge를 발급하고, 브라우저는 입력 비밀번호로 PBKDF2 파생키를 만든 뒤 challenge에 대한 HMAC 응답값만 전송합니다. Network 탭의 `/login` payload에는 `username`, `challenge_id`, `client_response`가 표시되고 `password=...`는 표시되지 않아야 합니다.
+
+이 방식은 평문 비밀번호가 요청 payload에 노출되는 문제를 줄이기 위한 장치입니다. 단, 원격 접속을 HTTP로 열면 서버가 내려주는 JavaScript 자체가 보호되지 않으므로 운영 환경에서는 HTTPS, 로컬 바인딩, SSH 터널, VPN 중 하나를 전제로 사용해야 합니다. 기본 challenge 저장소는 프로세스 메모리이므로 `uvicorn --workers` 같은 다중 worker 실행은 권장하지 않습니다.
+
+로컬 테스트에서는 아래 명령을 권장합니다. 비밀번호는 터미널에서 숨김 입력으로 받고, 해시와 세션 secret은 프로세스 메모리에만 둡니다.
+
+```bash
+python3 scripts/run_web_with_auth.py --host 127.0.0.1 --port 8088
+```
+
+로컬 테스트 계정을 바꾸려면 실행 중인 웹 앱을 중지한 뒤 원하는 username으로 다시 실행합니다. password는 명령줄에 쓰지 않고 프롬프트에 직접 입력합니다.
+
+```bash
+kill <uvicorn_pid>
+python3 scripts/run_web_with_auth.py --host 127.0.0.1 --port 8088 --username user1
+```
+
+현재 세션처럼 임시 credentials 파일을 만들어 테스트하는 경우 password는 채팅이나 커맨드 히스토리에 남기지 말고 로컬 파일에서만 확인합니다.
+
+```bash
+cat /private/tmp/oci_resource_extractor_test_credentials.txt
+```
+
+비밀번호 해시는 아래 명령으로 생성합니다. 입력한 비밀번호는 화면에 출력되지 않고, 최종 해시만 출력됩니다.
+
+```bash
+python3 scripts/generate_password_hash.py
+```
+
+출력 형식은 아래와 같으며, 출력된 한 줄 전체가 `OCI_EXTRACTOR_PASSWORD_HASH` 값입니다.
+
+```text
+pbkdf2_sha256$260000$<salt>$<hash>
+```
+
+환경변수:
+
+```bash
+export OCI_EXTRACTOR_AUTH_ENABLED=true
+export OCI_EXTRACTOR_USERNAME=admin
+export OCI_EXTRACTOR_PASSWORD_HASH='pbkdf2_sha256$260000$...'
+export OCI_EXTRACTOR_SESSION_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export OCI_EXTRACTOR_SESSION_TTL_MINUTES=480
+export OCI_EXTRACTOR_COOKIE_SECURE=false
+```
+
+운영 계정을 변경하려면 `OCI_EXTRACTOR_USERNAME`과 `OCI_EXTRACTOR_PASSWORD_HASH`를 새 값으로 바꾸고 웹 앱을 재시작합니다. 기존 세션을 모두 무효화하려면 `OCI_EXTRACTOR_SESSION_SECRET`도 새 랜덤 값으로 함께 교체합니다.
+
+```bash
+python3 scripts/generate_password_hash.py
+
+export OCI_EXTRACTOR_USERNAME=user1
+export OCI_EXTRACTOR_PASSWORD_HASH='pbkdf2_sha256$260000$...'
+export OCI_EXTRACTOR_SESSION_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+uvicorn web_app:app --host 127.0.0.1 --port 8088
+```
+
+systemd로 실행 중이면 환경 파일 또는 service unit의 환경변수를 수정한 뒤 재시작합니다.
+
+```bash
+sudo systemctl restart oci-resource-extractor-web
+```
+
+`OCI_EXTRACTOR_COOKIE_SECURE=true`는 HTTPS로 서비스할 때만 사용하세요. `OCI_EXTRACTOR_AUTH_ENABLED=true`인데 username/hash/secret이 없거나 `.env.example`의 예시값을 그대로 쓰면 앱 시작 시 설정 오류로 실패합니다.
+
+GitHub 업로드 시 실제 값이 들어간 `.env` 파일은 커밋하지 않습니다. 저장소에는 더미 값만 담은 `.env.example`만 포함합니다.
 
 ## 데몬 등록(systemd)
 

@@ -1,12 +1,15 @@
 import os
+import hmac
+import secrets
 import threading
 import time
 import uuid
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
+import auth_utils
 import common
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -18,8 +21,22 @@ app = FastAPI(title="OCI Resource Extractor")
 
 JOB_LOCK = threading.Lock()
 STORE_LOCK = threading.Lock()
+AUTH_CHALLENGE_LOCK = threading.Lock()
 JOBS = {}
+AUTH_CHALLENGES = {}
 MAX_EVENTS_PER_JOB = 500
+AUTH_COOKIE_NAME = "oci_extractor_session"
+AUTH_DEFAULT_TTL_MINUTES = 480
+AUTH_CHALLENGE_TTL_SECONDS = 300
+MAX_AUTH_CHALLENGES = 100
+AUTH_EXAMPLE_HASH = "pbkdf2_sha256$260000$example_salt$example_hash"
+AUTH_EXAMPLE_SECRETS = {
+    "replace-with-long-random-secret",
+    "replace-with-private-random-secret",
+    "change-me",
+    "changeme",
+    "secret",
+}
 
 SERVICE_LABELS = {
     "compute": "Compute Instance",
@@ -139,10 +156,38 @@ a:hover {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+.logout-form {
+  margin: 0;
+}
+.logout-form button {
+  min-height: 30px;
+  padding: 5px 10px;
+}
 main {
   margin: 0 auto;
   max-width: 1240px;
   padding: 24px 28px 36px;
+}
+.login-shell {
+  display: grid;
+  min-height: calc(100vh - 150px);
+  place-items: center;
+}
+.login-panel {
+  max-width: 420px;
+  width: min(100%, 420px);
+}
+.login-form {
+  display: grid;
+  gap: 14px;
+}
+.login-form button {
+  width: 100%;
+}
+.login-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
 }
 .workspace-grid {
   display: grid;
@@ -197,6 +242,7 @@ main {
   margin-bottom: 6px;
 }
 input[type="text"],
+input[type="password"],
 select {
   background: var(--surface);
   border: 1px solid #c7cfda;
@@ -207,6 +253,7 @@ select {
   width: 100%;
 }
 input[type="text"]:focus,
+input[type="password"]:focus,
 select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
@@ -735,6 +782,208 @@ def _safe(value):
     return escape(str(value)) if value is not None else ""
 
 
+def _env_truthy(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _auth_enabled():
+    return _env_truthy("OCI_EXTRACTOR_AUTH_ENABLED", False)
+
+
+def _auth_username():
+    return os.getenv("OCI_EXTRACTOR_USERNAME", "").strip()
+
+
+def _auth_password_hash():
+    return os.getenv("OCI_EXTRACTOR_PASSWORD_HASH", "").strip()
+
+
+def _auth_session_secret():
+    return os.getenv("OCI_EXTRACTOR_SESSION_SECRET", "").strip()
+
+
+def _auth_session_ttl_seconds():
+    raw_value = os.getenv("OCI_EXTRACTOR_SESSION_TTL_MINUTES", str(AUTH_DEFAULT_TTL_MINUTES))
+    try:
+        minutes = int(raw_value)
+    except (TypeError, ValueError):
+        minutes = AUTH_DEFAULT_TTL_MINUTES
+    if minutes <= 0:
+        minutes = AUTH_DEFAULT_TTL_MINUTES
+    return minutes * 60
+
+
+def _auth_cookie_secure():
+    return _env_truthy("OCI_EXTRACTOR_COOKIE_SECURE", False)
+
+
+def _auth_config_errors():
+    if not _auth_enabled():
+        return []
+
+    errors = []
+    username = _auth_username()
+    password_hash = _auth_password_hash()
+    session_secret = _auth_session_secret()
+
+    if not username:
+        errors.append("OCI_EXTRACTOR_USERNAME is required")
+    if not password_hash:
+        errors.append("OCI_EXTRACTOR_PASSWORD_HASH is required")
+    elif password_hash == AUTH_EXAMPLE_HASH or "example_" in password_hash:
+        errors.append("OCI_EXTRACTOR_PASSWORD_HASH must not use the example value")
+    elif not auth_utils.is_supported_password_hash(password_hash):
+        errors.append("OCI_EXTRACTOR_PASSWORD_HASH must be a pbkdf2_sha256 hash")
+
+    if not session_secret:
+        errors.append("OCI_EXTRACTOR_SESSION_SECRET is required")
+    elif session_secret.lower() in AUTH_EXAMPLE_SECRETS or len(session_secret) < 32:
+        errors.append("OCI_EXTRACTOR_SESSION_SECRET must be a non-example value of 32+ chars")
+
+    return errors
+
+
+def _require_auth_config():
+    errors = _auth_config_errors()
+    if errors:
+        raise RuntimeError("Invalid web auth configuration: " + "; ".join(errors))
+
+
+def _request_wants_json(request):
+    if request.url.path.startswith("/api/"):
+        return True
+    accept = request.headers.get("accept", "")
+    return "application/json" in accept and "text/html" not in accept
+
+
+def _sanitize_next_path(next_path):
+    if not next_path or not next_path.startswith("/") or next_path.startswith("//"):
+        return "/"
+    if next_path == "/login" or next_path.startswith("/login?"):
+        return "/"
+    return next_path
+
+
+def _login_redirect_for(request):
+    next_path = request.url.path
+    if request.url.query:
+        next_path = f"{next_path}?{request.url.query}"
+    return RedirectResponse(
+        f"/login?next={quote(_sanitize_next_path(next_path), safe='/')}",
+        status_code=303,
+    )
+
+
+def _create_auth_cookie_response(redirect_to, username):
+    ttl_seconds = _auth_session_ttl_seconds()
+    session_value = auth_utils.create_signed_session(
+        username,
+        _auth_session_secret(),
+        ttl_seconds,
+    )
+    response = RedirectResponse(_sanitize_next_path(redirect_to), status_code=303)
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        session_value,
+        max_age=ttl_seconds,
+        httponly=True,
+        secure=_auth_cookie_secure(),
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+def _delete_auth_cookie_response(redirect_to="/login"):
+    response = RedirectResponse(redirect_to, status_code=303)
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    return response
+
+
+def _cleanup_auth_challenges(now=None):
+    current_time = now or time.time()
+    expired = [
+        challenge_id
+        for challenge_id, payload in AUTH_CHALLENGES.items()
+        if payload.get("expires_at", 0) < current_time
+    ]
+    for challenge_id in expired:
+        AUTH_CHALLENGES.pop(challenge_id, None)
+
+    overflow_count = len(AUTH_CHALLENGES) - MAX_AUTH_CHALLENGES
+    if overflow_count > 0:
+        oldest_ids = sorted(
+            AUTH_CHALLENGES,
+            key=lambda item: AUTH_CHALLENGES[item].get("expires_at", 0),
+        )[:overflow_count]
+        for challenge_id in oldest_ids:
+            AUTH_CHALLENGES.pop(challenge_id, None)
+
+
+def _new_auth_challenge():
+    challenge_id = secrets.token_urlsafe(24)
+    nonce = secrets.token_urlsafe(32)
+    with AUTH_CHALLENGE_LOCK:
+        _cleanup_auth_challenges()
+        AUTH_CHALLENGES[challenge_id] = {
+            "nonce": nonce,
+            "expires_at": time.time() + AUTH_CHALLENGE_TTL_SECONDS,
+        }
+    return challenge_id, nonce
+
+
+def _consume_auth_challenge(challenge_id):
+    if not challenge_id:
+        return None
+    with AUTH_CHALLENGE_LOCK:
+        _cleanup_auth_challenges()
+        payload = AUTH_CHALLENGES.pop(challenge_id, None)
+    if not payload:
+        return None
+    if payload.get("expires_at", 0) < time.time():
+        return None
+    return payload.get("nonce")
+
+
+@app.on_event("startup")
+async def validate_web_auth_configuration():
+    _require_auth_config()
+
+
+@app.middleware("http")
+async def require_web_authentication(request: Request, call_next):
+    if not _auth_enabled():
+        return await call_next(request)
+
+    path = request.url.path
+    if path in {"/login", "/logout", "/favicon.ico"}:
+        return await call_next(request)
+
+    try:
+        _require_auth_config()
+    except RuntimeError as exc:
+        return JSONResponse(
+            {"error": "Authentication is not configured", "detail": str(exc)},
+            status_code=500,
+        )
+
+    username = auth_utils.validate_signed_session(
+        request.cookies.get(AUTH_COOKIE_NAME),
+        _auth_session_secret(),
+    )
+    if username:
+        request.state.authenticated_user = username
+        return await call_next(request)
+
+    if _request_wants_json(request):
+        return JSONResponse({"error": "Authentication required"}, status_code=401)
+
+    return _login_redirect_for(request)
+
+
 def _normalize_filter_values(values):
     if not values:
         return []
@@ -950,6 +1199,88 @@ def _run_job(job_id, profile, regions, compartments, service_names):
             )
     finally:
         JOB_LOCK.release()
+
+
+def _login_script():
+    return """
+<script>
+(() => {
+  const form = document.querySelector("[data-login-form]");
+  const passwordInput = document.querySelector("[data-login-password]");
+  const responseInput = document.querySelector("[data-login-response]");
+  const errorTarget = document.querySelector("[data-login-error]");
+  if (!form || !passwordInput || !responseInput) return;
+
+  const encoder = new TextEncoder();
+  function setError(message) {
+    if (errorTarget) {
+      errorTarget.hidden = !message;
+      errorTarget.textContent = message || "";
+    }
+  }
+  function b64url(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+  }
+  async function createResponse() {
+    const username = form.querySelector("[name='username']").value || "";
+    const password = passwordInput.value || "";
+    const challengeId = form.querySelector("[name='challenge_id']").value || "";
+    const nonce = form.dataset.challengeNonce || "";
+    const salt = form.dataset.passwordSalt || "";
+    const iterations = Number(form.dataset.passwordIterations || 0);
+    if (!username || !password || !challengeId || !nonce || !salt || !iterations) {
+      throw new Error("로그인 입력값이 부족합니다.");
+    }
+    if (!window.crypto || !window.crypto.subtle) {
+      throw new Error("이 브라우저는 보안 응답 생성을 지원하지 않습니다.");
+    }
+
+    const passwordKey = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(password),
+      "PBKDF2",
+      false,
+      ["deriveBits"]
+    );
+    const derivedBits = await crypto.subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: encoder.encode(salt),
+        iterations
+      },
+      passwordKey,
+      256
+    );
+    const hmacKey = await crypto.subtle.importKey(
+      "raw",
+      derivedBits,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const message = `v1.${username}.${challengeId}.${nonce}`;
+    const signature = await crypto.subtle.sign("HMAC", hmacKey, encoder.encode(message));
+    return b64url(signature);
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setError("");
+    try {
+      responseInput.value = await createResponse();
+      passwordInput.value = "";
+      form.submit();
+    } catch (error) {
+      setError(error.message || "로그인 요청을 만들 수 없습니다.");
+    }
+  });
+})();
+</script>
+"""
 
 
 def _home_script():
@@ -1383,8 +1714,15 @@ refreshJob();
     return script.replace("__JOB_ID__", repr(job_id))
 
 
-def _layout(title, body, *, refresh_job_id=None, extra_script=""):
+def _layout(title, body, *, refresh_job_id=None, extra_script="", show_logout=True):
     refresh_script = _job_refresh_script(refresh_job_id) if refresh_job_id else ""
+    auth_controls = ""
+    if show_logout and _auth_enabled():
+        auth_controls = f"""
+        <span class="chip">{_safe(_auth_username())}</span>
+        <form class="logout-form" method="post" action="/logout">
+          <button class="subtle" type="submit">로그아웃</button>
+        </form>"""
     return HTMLResponse(
         f"""<!doctype html>
 <html lang="ko">
@@ -1404,6 +1742,7 @@ def _layout(title, body, *, refresh_job_id=None, extra_script=""):
       <div class="header-meta">
         <span class="chip">FastAPI</span>
         <span class="chip">Raw-first report</span>
+        {auth_controls}
       </div>
     </div>
   </header>
@@ -1642,6 +1981,113 @@ def _render_home(message=None):
 </div>
 """
     return _layout("OCI Resource Extractor", body, extra_script=_home_script())
+
+
+def _render_login(message=None, next_path="/"):
+    notice = f'<div class="notice">{_safe(message)}</div>' if message else ""
+    challenge_id, nonce = _new_auth_challenge()
+    hash_params = auth_utils.password_hash_params(_auth_password_hash()) or {}
+    iterations = hash_params.get("iterations", auth_utils.DEFAULT_PBKDF2_ITERATIONS)
+    salt = hash_params.get("salt", "")
+    body = f"""
+<div class="login-shell">
+  <section class="panel login-panel">
+    <div class="panel-header">
+      <div>
+        <h2>로그인</h2>
+        <p>OCI Resource Extractor 접근 권한을 확인합니다.</p>
+      </div>
+    </div>
+    <div class="panel-body">
+      {notice}
+      <div class="notice" data-login-error hidden></div>
+      <form class="login-form" method="post" action="/login" data-login-form
+        data-password-iterations="{_safe(iterations)}"
+        data-password-salt="{_safe(salt)}"
+        data-challenge-nonce="{_safe(nonce)}">
+        <input type="hidden" name="next" value="{_safe(_sanitize_next_path(next_path))}">
+        <input type="hidden" name="challenge_id" value="{_safe(challenge_id)}">
+        <input type="hidden" name="client_response" data-login-response>
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" type="text" name="username" autocomplete="username" autofocus required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" type="password" autocomplete="current-password" data-login-password required>
+        </div>
+        <button type="submit">로그인</button>
+        <p class="login-note">비밀번호는 요청 본문으로 보내지 않고 1회용 challenge 응답만 전송합니다.</p>
+      </form>
+    </div>
+  </section>
+</div>
+"""
+    response = _layout("Login", body, extra_script=_login_script(), show_logout=False)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    if not _auth_enabled():
+        return RedirectResponse("/", status_code=303)
+
+    try:
+        _require_auth_config()
+    except RuntimeError as exc:
+        return _render_login(f"인증 설정 오류: {exc}")
+
+    next_path = _sanitize_next_path(request.query_params.get("next", "/"))
+    username = auth_utils.validate_signed_session(
+        request.cookies.get(AUTH_COOKIE_NAME),
+        _auth_session_secret(),
+    )
+    if username:
+        return RedirectResponse(next_path, status_code=303)
+    return _render_login(next_path=next_path)
+
+
+@app.post("/login")
+async def login(request: Request):
+    if not _auth_enabled():
+        return RedirectResponse("/", status_code=303)
+
+    try:
+        _require_auth_config()
+    except RuntimeError as exc:
+        return _render_login(f"인증 설정 오류: {exc}")
+
+    body = (await request.body()).decode("utf-8")
+    form = parse_qs(body)
+    username = (form.get("username") or [""])[0]
+    challenge_id = (form.get("challenge_id") or [""])[0]
+    client_response = (form.get("client_response") or [""])[0]
+    next_path = _sanitize_next_path((form.get("next") or ["/"])[0])
+
+    expected_username = _auth_username()
+    nonce = _consume_auth_challenge(challenge_id)
+    valid_username = hmac.compare_digest(username, expected_username)
+    valid_response = (
+        bool(nonce)
+        and valid_username
+        and auth_utils.verify_challenge_response(
+            _auth_password_hash(),
+            expected_username,
+            challenge_id,
+            nonce,
+            client_response,
+        )
+    )
+    if not valid_username or not valid_response:
+        return _render_login("아이디 또는 비밀번호가 올바르지 않습니다.", next_path=next_path)
+
+    return _create_auth_cookie_response(next_path, expected_username)
+
+
+@app.post("/logout")
+def logout():
+    return _delete_auth_cookie_response()
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -13,6 +13,7 @@ env/
 # Local configuration and credentials
 .env
 .env.*
+!.env.example
 .oci/
 *.pem
 *.key
